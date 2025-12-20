@@ -64,7 +64,7 @@ echo "[+] Making meshtak.py executable..."
 chmod +x "$APP_DIR/meshtak.py"
 
 echo "[+] Installing systemd service..."
-cp "$APP_DIR/$SERVICE_FILE" /etc/systemd/system/meshtak.service
+cp "$APP_DIR/$SERVICE_FILE" /etc/systemd/system/$SERVICE_FILE
 
 echo "[+] Reloading systemd..."
 systemctl daemon-reexec
