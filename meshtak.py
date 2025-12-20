@@ -26,7 +26,7 @@ TAK_PLATFORM = "TAK"
 TAK_OS = "Linux"
 TAK_VERSION = "4.10.3"
 
-SEND_INTERVAL_SECONDS = 5   # rate limit per node
+SEND_INTERVAL_SECONDS = 5
 
 # ==========================================
 
@@ -34,8 +34,8 @@ tak_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 tak_addr = (TAK_HOST, TAK_PORT)
 
 # Cache
-node_callsigns = {}   # node_id -> callsign
-last_sent = {}        # node_id -> timestamp
+node_callsigns = {}
+last_sent = {}
 
 
 def iso(dt):
