@@ -1,13 +1,13 @@
-# Meshtak
+# MeshTAK
 **Meshtastic → TAK Gateway**
 
-Meshtak is a lightweight Python service that bridges **Meshtastic node position data** to **TAK (Team Awareness Kit)** by converting Meshtastic packets into **Cursor-on-Target (CoT)** events and forwarding them to a TAK server over UDP.
+MeshTAK is a lightweight Python service that bridges **Meshtastic node position data** to **TAK (Team Awareness Kit)** by converting Meshtastic packets into **Cursor-on-Target (CoT)** events and forwarding them to a TAK server over UDP.
 
 It runs as a **systemd service** and supports both **APT-based** and **DNF-based** Linux distributions.
 
 ---
 
-## What Meshtak Does
+## What MeshTAK Does
 
 - Connects to a Meshtastic node via TCP
 - Subscribes to Meshtastic pubsub events
@@ -27,7 +27,7 @@ TAK clients (ATAK / WinTAK) then display Meshtastic nodes as live map objects.
 flowchart LR
     Mesh[Meshtastic Mesh Network]
     Node[Meshtastic TCP Node]
-    Gateway[Meshtak Gateway<br/>meshtak.py]
+    Gateway[MeshTAK Gateway<br/>meshtak.py]
     TAK[TAK Server]
     Clients[ATAK and WinTAK Clients]
 
@@ -52,5 +52,5 @@ flowchart LR
         - ```Port``` is as desired, the default on this build is ```8087```. If you deviate from this port, you MUST alter that in step 4.
         - All other options are at your discretion but do not need to be altered.
         - Press ```Save```
-7. To see the status, type ```systemctl status meshtak``` and you can see logs with ```journalctl -u meshtak -f```
+7. To see the status, type ```systemctl status MeshTAK``` and you can see logs with ```journalctl -u MeshTAK -f```
 8. **Profit!**
