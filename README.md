@@ -52,4 +52,5 @@ flowchart LR
         - ```Port``` is as desired, the default on this build is ```8087```. If you deviate from this port, you MUST alter that in step 4.
         - All other options are at your discretion but do not need to be altered.
         - Press ```Save```
-7. **Profit!**
+7. To see the status, type ```systemctl status meshtak``` and you can see logs with ```journalctl -u meshtak -f```
+8. **Profit!**
