@@ -25,22 +25,16 @@ TAK clients (ATAK / WinTAK) then display Meshtastic nodes as live map objects.
 
 ## Architecture Overview
 
-```mermaid
-flowchart LR
-    Mesh[Meshtastic Mesh Network]
-    Node[Meshtastic TCP Node]
-    Gateway[Python Functions]
-<<<<<<< HEAD
-=======
-    TAK[TAK Server]
-    Clients[ATAK and WinTAK Clients]
 
+```mermaid
+flowchart LR;
     Mesh --> Node
     Node --> Gateway
     Gateway --> TAK
-    TAK --> Clients
+    TAK --> Client
+```
 
-## How To
+# How To
 1. `cd` to `/opt` and run `git clone https://github.com/maui671/meshtak`
 2. Run `cd /opt/meshtak`
 3. `chmod +x setup.sh`
@@ -63,7 +57,6 @@ flowchart LR
     Mesh[Meshtastic Mesh Network]
     Node[Meshtastic TCP Node]
     Gateway[Meshtak Gateway<br/>meshtak.py]
->>>>>>> a7b68d6 (updating readme)
     TAK[TAK Server]
     Clients[ATAK and WinTAK Clients]
 
