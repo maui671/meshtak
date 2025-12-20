@@ -1,12 +1,9 @@
 # Meshtak
 **Meshtastic → TAK Gateway**
 
-Meshtak is a lightweight Python service that bridges **Meshtastic mesh position data**
-to **TAK (Team Awareness Kit)** by converting Meshtastic packets into
-**Cursor-on-Target (CoT)** events and forwarding them to a TAK server over UDP.
+Meshtak is a lightweight Python service that bridges **Meshtastic node position data** to **TAK (Team Awareness Kit)** by converting Meshtastic packets into **Cursor-on-Target (CoT)** events and forwarding them to a TAK server over UDP.
 
-It runs as a **systemd service** and supports both **APT-based** and **DNF-based**
-Linux distributions.
+It runs as a **systemd service** and supports both **APT-based** and **DNF-based** Linux distributions.
 
 ---
 
@@ -48,12 +45,11 @@ flowchart LR
     - MESHTASTIC_HOST = "{IP address of IP connected Meshtastic gateway}"
     - TAK_HOST = "{IP address of TAK server that the Meshtastic gateway can connect to}"
 5. `./setup.sh`
-6. Profit!
-7. In TAK Server navigate to ```Configuration```->```Inputs and Data Feeds```
+6. In TAK Server navigate to ```Configuration```->```Inputs and Data Feeds```
     - Under ```Streaming Data Feeds```, select ```Add Streaming Data Feed```
         - Alter ```Protocol``` to ```Standard UDP (UDP)```
         - For ```Authentication Type``` select ```None```
         - ```Port``` is as desired, the default on this build is ```8087```. If you deviate from this port, you MUST alter that in step 4.
         - All other options are at your discretion but do not need to be altered.
         - Press ```Save```
-8. **Profit!**
+7. **Profit!**
