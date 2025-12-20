@@ -27,7 +27,13 @@ TAK clients (ATAK / WinTAK) then display Meshtastic nodes as live map objects.
 
 
 ```mermaid
-graph TD;
+flowchart LR;
+    Mesh[Meshtastic Mesh Network]
+    Node[Meshtastic TCP Node]
+    Gateway[Python Functions]
+    TAK[TAK Server]
+    Clients[ATAK and WinTAK Clients]
+
     Mesh --> Node
     Node --> Gateway
     Gateway --> TAK
