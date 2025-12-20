@@ -27,7 +27,7 @@ TAK clients (ATAK / WinTAK) then display Meshtastic nodes as live map objects.
 
 
 ```mermaid
-flowchart LR;
+graph TD;
     Mesh --> Node
     Node --> Gateway
     Gateway --> TAK
