@@ -27,17 +27,17 @@ TAK clients (ATAK / WinTAK) then display Meshtastic nodes as live map objects.
 
 
 ```mermaid
-flowchart LR;
+flowchart LR
     Mesh[Meshtastic Mesh Network]
     Node[Meshtastic TCP Node]
-    Gateway[Python Functions]
+    Gateway[Meshtak Gateway<br/>meshtak.py]
     TAK[TAK Server]
     Clients[ATAK and WinTAK Clients]
 
     Mesh --> Node
     Node --> Gateway
     Gateway --> TAK
-    TAK --> Client
+    TAK --> Clients
 ```
 
 # How To
@@ -57,16 +57,3 @@ flowchart LR;
         - All other options are at your discretion but do not need to be altered.
         - Press ```Save```
 8. **Profit!**
-
-```mermaid
-flowchart LR
-    Mesh[Meshtastic Mesh Network]
-    Node[Meshtastic TCP Node]
-    Gateway[Meshtak Gateway<br/>meshtak.py]
-    TAK[TAK Server]
-    Clients[ATAK and WinTAK Clients]
-
-    Mesh --> Node
-    Node --> Gateway
-    Gateway --> TAK
-    TAK --> Clients
