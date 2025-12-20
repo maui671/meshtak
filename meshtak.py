@@ -6,13 +6,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from pubsub import pub
 from meshtastic.tcp_interface import TCPInterface
+import logging
+import os
 
 # ================= CONFIG =================
 
-MESHTASTIC_HOST = "10.42.0.150"
+MESHTASTIC_HOST = "192.168.12.40"
 MESHTASTIC_PORT = 4403
 
-TAK_HOST = "10.42.0.175"
+TAK_HOST = "127.0.0.1"
 TAK_PORT = 8087
 
 COT_TYPE = "a-f-G-U-C-I"
@@ -28,6 +30,8 @@ TAK_VERSION = "4.10.3"
 
 SEND_INTERVAL_SECONDS = 5
 
+LOG_FILE_PATH = "/var/log/meshtak.log"
+
 # ==========================================
 
 tak_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -36,7 +40,6 @@ tak_addr = (TAK_HOST, TAK_PORT)
 # Cache
 node_callsigns = {}
 last_sent = {}
-
 
 def iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -73,7 +76,7 @@ stale="{iso(stale)}">
 </event>"""
 
     tak_sock.sendto(cot.encode("utf-8"), tak_addr)
-    print(f"TAK ← {callsign} {lat:.6f},{lon:.6f} hae={hae}")
+    logging.info(f"TAK ← {callsign} {lat:.6f},{lon:.6f} hae={hae}")
 
 
 def on_receive(packet, interface):
@@ -131,15 +134,51 @@ def on_receive(packet, interface):
         last_sent[node_id] = now_ts
 
     except Exception as e:
-        print("ERROR:", e)
+        logging.error(f"Error processing packet: {e}")
 
 
-pub.subscribe(on_receive, "meshtastic.receive")
+def connect_to_meshtastic():
+    max_retries = 5
+    retries = 0
+    while retries < max_retries:
+        try:
+            logging.info("Connecting to Meshtastic TCP node...")
+            iface = TCPInterface(MESHTASTIC_HOST, MESHTASTIC_PORT)
+            logging.info("Successfully connected to Meshtastic!")
+            return iface
+        except Exception as e:
+            retries += 1
+            wait_time = 5 * retries  # Exponential backoff
+            logging.warning(f"Error connecting to Meshtastic: {e}. Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+    logging.error("Failed to connect to Meshtastic after several attempts.")
+    return None
 
-print("Connecting to Meshtastic TCP node...")
-iface = TCPInterface(MESHTASTIC_HOST, MESHTASTIC_PORT)
 
-print("Mesh → TAK gateway running")
-while True:
-    time.sleep(1)
+def setup_logging():
+    # Create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
 
+    # Set up logging to file
+    logging.basicConfig(
+        filename=LOG_FILE_PATH,
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+
+    logging.info("Logging started")
+
+
+# Initialize logging
+setup_logging()
+
+logging.info("Starting Mesh-Tak Gateway...")
+
+# Main connection loop
+iface = connect_to_meshtastic()
+if iface:
+    logging.info("Mesh → TAK gateway running")
+    while True:
+        time.sleep(1)
+else:
+    logging.error("Exiting... Could not establish connection.")
