@@ -39,7 +39,6 @@ flowchart LR
     Node --> Gateway
     Gateway --> TAK
     TAK --> Clients
-```
 
 ## How To
 1. `cd` to `/opt` and run `git clone https://github.com/maui671/meshtak`
