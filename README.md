@@ -43,7 +43,7 @@ flowchart LR
 3. `chmod +x setup.sh`
 4. `nano meshtak.py` or `vi meshtak.py` and edit the following as needed.
     - MESHTASTIC_HOST = "{IP address of IP connected Meshtastic gateway}"
-    - TAK_HOST = "{IP address of TAK server that the Meshtastic gateway can connect to}"
+    - TAK_HOST = "{IP address of TAK server that the Meshtastic gateway can connect to}" *Note: If running on the same machine as the TAK server, this should be 127.0.0.1.
 5. `./setup.sh`
 6. In TAK Server navigate to ```Configuration```->```Inputs and Data Feeds```
     - Under ```Streaming Data Feeds```, select ```Add Streaming Data Feed```
