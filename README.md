@@ -10,13 +10,12 @@ It runs as a **systemd service** and supports both **APT-based** and **DNF-based
 ## What MeshTAK Does
 
 - Connects to a Meshtastic node via TCP
-- Subscribes to Meshtastic pubsub events
-- Tracks node callsigns and positions
-- Rate-limits position updates per node
-- Converts positions into CoT XML
-- Sends CoT events to a TAK server via UDP
+- Utilizes the Python Meshtastic CLI to actively poll nodes for location
+- Extrapolates node callsigns and positions
+- Converts node positions into CoT XML
+- Sends CoT packets to a TAK server via UDP
 
-TAK clients (ATAK / WinTAK) then display Meshtastic nodes as live map objects.
+TAK clients (ATAK / WinTAK / WebTAK / iTAK) then display Meshtastic nodes as live TAK users.
 
 ---
 
