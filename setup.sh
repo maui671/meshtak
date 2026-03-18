@@ -60,11 +60,15 @@ pip install \
 # -------------------------------
 # Permissions & service install
 # -------------------------------
+echo "Changing operational directory permissions."
+chown -R tdcadmin:tdcadmin /opt/meshtak
+echo "Copying meshtak files"
+cp meshtak.py $APP_DIR/
 echo "[+] Making meshtak.py executable..."
 chmod +x "$APP_DIR/meshtak.py"
 
 echo "[+] Installing systemd service..."
-cp "$APP_DIR/$SERVICE_FILE" /etc/systemd/system/$SERVICE_FILE
+cp $SERVICE_FILE /etc/systemd/system/$SERVICE_FILE
 
 echo "[+] Reloading systemd..."
 systemctl daemon-reexec
