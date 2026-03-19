@@ -65,10 +65,6 @@ main() {
   echo "  - systemd service (${SERVICE_NAME})"
   echo "  - ${APP_DIR}"
   echo
-  echo "This will KEEP:"
-  echo "  - ${PRESERVE_DIR}"
-  echo "  - user/group tdcadmin"
-  echo
 
   read -rp "Continue? [y/N]: " confirm
   if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
