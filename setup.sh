@@ -22,9 +22,6 @@ require_root() {
   [[ "${EUID}" -eq 0 ]] || fail "Run this script as root."
 }
 
-# =========================
-# MODE SELECTION FIRST
-# =========================
 choose_mode() {
   echo
   bold "Select Meshtastic connection mode"
@@ -41,6 +38,18 @@ choose_mode() {
   done
 
   ok "Selected mode: ${CONNECTION_MODE}"
+}
+
+choose_tak_target() {
+  echo
+  bold "TAK server configuration"
+  read -rp "TAK server IP/hostname: " TAK_HOST
+  [[ -n "${TAK_HOST}" ]] || fail "TAK server IP/hostname is required."
+
+  read -rp "TAK server port [8088]: " TAK_PORT
+  TAK_PORT="${TAK_PORT:-8088}"
+
+  ok "TAK target: ${TAK_HOST}:${TAK_PORT}"
 }
 
 detect_pkg_mgr() {
@@ -77,6 +86,19 @@ copy_repo_files() {
   ok "Files copied to ${INSTALL_DIR}"
 }
 
+apply_tak_target() {
+  info "Applying TAK server settings to Python files..."
+
+  for f in "${INSTALL_DIR}/${MESHTAK_IP_FILE}" "${INSTALL_DIR}/${MESHTAK_SERIAL_FILE}"; do
+    [[ -f "$f" ]] || continue
+
+    sed -i -E "s|^TAK_HOST *= *['\"].*['\"]|TAK_HOST = \"${TAK_HOST}\"|" "$f"
+    sed -i -E "s|^TAK_PORT *= *[0-9]+|TAK_PORT = ${TAK_PORT}|" "$f"
+  done
+
+  ok "TAK settings applied"
+}
+
 setup_python_venv() {
   info "Setting up Python venv..."
 
@@ -89,9 +111,6 @@ setup_python_venv() {
   ok "Venv ready"
 }
 
-# =========================
-# SERIAL DETECTION
-# =========================
 detect_serial_candidates() {
   local candidates=()
 
@@ -140,9 +159,6 @@ choose_serial_device() {
   done
 }
 
-# =========================
-# CONFIG BASED ON MODE
-# =========================
 configure_mode() {
 
   if [[ "${CONNECTION_MODE}" == "serial" ]]; then
@@ -202,6 +218,7 @@ show_status() {
   echo
   bold "Install complete"
   echo "Mode:          ${CONNECTION_MODE}"
+  echo "TAK target:    ${TAK_HOST}:${TAK_PORT}"
   echo "Script:        ${INSTALL_DIR}/${ACTIVE_PY}"
   echo "Python:        ${VENV_DIR}/bin/python"
   echo
@@ -211,11 +228,13 @@ show_status() {
 
 main() {
   require_root
-  choose_mode          # 🔥 FIRST
+  choose_mode
+  choose_tak_target
   detect_pkg_mgr
   install_dependencies
   ensure_install_dir
   copy_repo_files
+  apply_tak_target
   setup_python_venv
   configure_mode
   install_service
