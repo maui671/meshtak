@@ -11,7 +11,7 @@ from meshtastic.serial_interface import SerialInterface
 
 # ================= CONFIG =================
 MESHTASTIC_DEVICE = "/dev/ttyS0"
-TAK_HOST = "127.0.0.1"
+TAK_HOST = "192.168.12.252"
 TAK_PORT = 8088
 COT_TYPE = "a-f-G-U-C-I"
 STALE_MINUTES = 4
