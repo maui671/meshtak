@@ -12,29 +12,26 @@ from meshtastic.serial_interface import SerialInterface
 
 # ================= CONFIG =================
 MESHTASTIC_DEVICE = "/dev/ttyS0"
+
 TAK_HOST = "127.0.0.1"
 TAK_PORT = 8088
 
 COT_TYPE = "a-f-G-U-C-I"
 STALE_MINUTES = 4
+
 GROUP_NAME = "Cyan"
 GROUP_ROLE = "Team Member"
+
 TAK_DEVICE = "Meshtastic-Gateway"
 TAK_PLATFORM = "TAK"
 TAK_OS = "Linux"
 TAK_VERSION = "4.10.3"
 
-# Node broadcasts every 10 sec on your design; this prevents one gateway
-# from re-sending the same node too aggressively if packets are noisy.
-SEND_INTERVAL_SECONDS = 5
+# Per-gateway dedup only. This prevents one gateway from flooding TAK
+# if it receives duplicate packets or immediate repeats.
+SEND_INTERVAL_SECONDS = 2
 
 LOG_FILE_PATH = "/var/log/meshtak.log"
-
-# Polling supplements pubsub so the gateway can refresh names and recent node state.
-POLL_SECONDS = 10
-
-# If position packet lacks altitude, fall back to this.
-DEFAULT_HAE = 9999999
 # ==========================================
 
 tak_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -54,43 +51,65 @@ def stable_uuid_from_node_id(node_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"meshtastic:{node_id}"))
 
 
-def make_aka(long_name: str, short_name: str, node_id: str) -> str:
-    """
-    Best-effort AKA-style label from Meshtastic node naming.
+def sanitize_callsign(value: str) -> str:
+    value = (value or "").strip()
+    return value[:64] if value else ""
 
-    Examples:
-      long=MAUI 5671 short=5671 -> M671
-      long=MAUI5671 short=5671  -> M671
-      short=5828                -> M828
-      otherwise falls back to short/long/node_id
-    """
+
+def make_callsign(long_name: str, short_name: str, node_id: str) -> str:
+    short_name = sanitize_callsign(short_name)
+    long_name = sanitize_callsign(long_name)
+
     if short_name:
-        short_name = short_name.strip()
-        digits = "".join(ch for ch in short_name if ch.isdigit())
-        if len(digits) >= 3:
-            return f"M{digits[-3:]}"
-        if short_name:
-            return short_name
-
+        return short_name
     if long_name:
-        compact = long_name.replace(" ", "").strip()
-        m = re.match(r"(?i)^MAUI(\d+)$", compact)
-        if m:
-            digits = m.group(1)
-            if len(digits) >= 3:
-                return f"M{digits[-3:]}"
-            return f"M{digits}"
+        compact = re.sub(r"\s+", " ", long_name).strip()
         if compact:
             return compact
-
     return node_id.lstrip("!")
+
+
+def refresh_node_cache():
+    global node_cache
+
+    try:
+        if iface and getattr(iface, "nodes", None):
+            node_cache = dict(iface.nodes)
+
+            for node_id, node in node_cache.items():
+                user = node.get("user", {})
+                node_callsigns[node_id] = make_callsign(
+                    user.get("longName", ""),
+                    user.get("shortName", ""),
+                    node_id,
+                )
+    except Exception as exc:
+        logging.warning(f"Failed to refresh node cache: {exc}")
+
+
+def get_callsign(node_id: str) -> str:
+    callsign = node_callsigns.get(node_id)
+    if callsign:
+        return callsign
+
+    node = node_cache.get(node_id, {})
+    user = node.get("user", {})
+    callsign = make_callsign(
+        user.get("longName", ""),
+        user.get("shortName", ""),
+        node_id,
+    )
+    node_callsigns[node_id] = callsign
+    return callsign
 
 
 def get_lat_lon(pos: dict):
     if "latitudeI" in pos and "longitudeI" in pos:
         return pos["latitudeI"] / 1e7, pos["longitudeI"] / 1e7
+
     if "latitude" in pos and "longitude" in pos:
         return float(pos["latitude"]), float(pos["longitude"])
+
     return None, None
 
 
@@ -99,39 +118,27 @@ def get_hae(pos: dict):
         value = pos.get(key)
         if value is not None:
             return value
-    return DEFAULT_HAE
+    return 9999999
 
 
-def refresh_node_cache():
-    global node_cache
-    try:
-        if iface and getattr(iface, "nodes", None):
-            node_cache = dict(iface.nodes)
-            for node_id, node in node_cache.items():
-                user = node.get("user", {})
-                callsign = make_aka(
-                    user.get("longName", ""),
-                    user.get("shortName", ""),
-                    node_id,
-                )
-                node_callsigns[node_id] = callsign
-    except Exception as e:
-        logging.warning(f"Failed to refresh node cache: {e}")
+def valid_position(lat, lon):
+    if lat is None or lon is None:
+        return False
+    if abs(lat) < 0.0001 and abs(lon) < 0.0001:
+        return False
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return False
+    return True
 
 
-def get_callsign(node_id: str) -> str:
-    if node_id in node_callsigns:
-        return node_callsigns[node_id]
+def should_send(node_id: str, pos: dict):
+    now_ts = time.time()
+    last = last_sent.get(node_id, 0)
 
-    node = node_cache.get(node_id, {})
-    user = node.get("user", {})
-    callsign = make_aka(
-        user.get("longName", ""),
-        user.get("shortName", ""),
-        node_id,
-    )
-    node_callsigns[node_id] = callsign
-    return callsign
+    if now_ts - last < SEND_INTERVAL_SECONDS:
+        return False
+
+    return True
 
 
 def send_cot(node_id: str, callsign: str, lat: float, lon: float, hae, source: str, pos_time=None):
@@ -145,7 +152,7 @@ def send_cot(node_id: str, callsign: str, lat: float, lon: float, hae, source: s
 
     cot = f"""<event version="2.0" uid="{uid}" type="{COT_TYPE}" how="m-g"
 time="{iso(now)}" start="{iso(now)}" stale="{iso(stale)}">
-  <point lat="{lat}" lon="{lon}" hae="{hae}" ce="9999999" le="9999999"/>
+  <point lat="{lat:.7f}" lon="{lon:.7f}" hae="{hae}" ce="9999999" le="9999999"/>
   <detail>
     <contact callsign="{callsign}"/>
     <__group name="{GROUP_NAME}" role="{GROUP_ROLE}"/>
@@ -160,20 +167,12 @@ time="{iso(now)}" start="{iso(now)}" stale="{iso(stale)}">
     )
 
 
-def maybe_send_position(node_id: str, pos: dict, source: str):
-    if not pos:
-        return
-
+def handle_position(node_id: str, pos: dict, source: str):
     lat, lon = get_lat_lon(pos)
-    if lat is None or lon is None:
+    if not valid_position(lat, lon):
         return
 
-    if abs(lat) < 0.0001 and abs(lon) < 0.0001:
-        return
-
-    now_ts = time.time()
-    last = last_sent.get(node_id, 0)
-    if now_ts - last < SEND_INTERVAL_SECONDS:
+    if not should_send(node_id, pos):
         return
 
     callsign = get_callsign(node_id)
@@ -181,7 +180,7 @@ def maybe_send_position(node_id: str, pos: dict, source: str):
     pos_time = pos.get("time")
 
     send_cot(node_id, callsign, lat, lon, hae, source, pos_time=pos_time)
-    last_sent[node_id] = now_ts
+    last_sent[node_id] = time.time()
 
 
 def on_receive(packet, interface):
@@ -196,39 +195,29 @@ def on_receive(packet, interface):
 
         port = decoded.get("portnum")
 
-        if port == "USER_APP":
+        if port in ("USER_APP", "NODEINFO_APP"):
             user = decoded.get("user", {})
-            callsign = make_aka(
+            callsign = make_callsign(
                 user.get("longName", ""),
                 user.get("shortName", ""),
                 node_id,
             )
             node_callsigns[node_id] = callsign
-            logging.info(f"USER_APP <- {callsign} [{node_id}]")
+            logging.info(f"NAME <- {callsign} [{node_id}] port={port}")
             return
 
         if port != "POSITION_APP":
             return
 
-        refresh_node_cache()
-
         pos = decoded.get("position")
         if not pos:
             return
 
-        maybe_send_position(node_id, pos, source="packet")
+        refresh_node_cache()
+        handle_position(node_id, pos, source="packet")
 
-    except Exception as e:
-        logging.error(f"Error processing packet: {e}")
-
-
-def poll_known_nodes():
-    refresh_node_cache()
-    for node_id, node in node_cache.items():
-        pos = node.get("position", {})
-        if not pos:
-            continue
-        maybe_send_position(node_id, pos, source="poll")
+    except Exception as exc:
+        logging.error(f"Error processing packet: {exc}")
 
 
 def connect_to_meshtastic():
@@ -241,11 +230,11 @@ def connect_to_meshtastic():
             connected = SerialInterface(devPath=MESHTASTIC_DEVICE)
             logging.info("Successfully connected to Meshtastic over serial!")
             return connected
-        except Exception as e:
+        except Exception as exc:
             retries += 1
             wait_time = 5 * retries
             logging.warning(
-                f"Error connecting to Meshtastic serial device: {e}. "
+                f"Error connecting to Meshtastic serial device: {exc}. "
                 f"Retrying in {wait_time} seconds..."
             )
             time.sleep(wait_time)
@@ -264,29 +253,24 @@ def setup_logging():
     logging.info("Logging started")
 
 
-setup_logging()
-logging.info("Starting MeshTAK Gateway...")
+def main():
+    global iface
 
-iface = connect_to_meshtastic()
-if not iface:
-    logging.error("Exiting... Could not establish connection.")
-    raise SystemExit(1)
+    setup_logging()
+    logging.info("Starting MeshTAK Gateway (serial mode)...")
 
-refresh_node_cache()
-pub.subscribe(on_receive, "meshtastic.receive")
-logging.info("Mesh -> TAK gateway running (all heard nodes mode)")
+    iface = connect_to_meshtastic()
+    if not iface:
+        logging.error("Exiting... Could not establish connection.")
+        raise SystemExit(1)
 
-last_poll = 0.0
+    refresh_node_cache()
+    pub.subscribe(on_receive, "meshtastic.receive")
+    logging.info("Mesh -> TAK gateway running (event-driven)")
 
-while True:
-    try:
-        now = time.time()
-        if now - last_poll >= POLL_SECONDS:
-            poll_known_nodes()
-            last_poll = now
-        time.sleep(0.25)
-    except KeyboardInterrupt:
-        break
-    except Exception as e:
-        logging.error(f"Main loop error: {e}")
+    while True:
         time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
