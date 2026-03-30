@@ -54,6 +54,8 @@ verify_preserved_data() {
   fi
 }
 
+rm -f /var/log/meshtak.log
+
 main() {
   require_root
 
