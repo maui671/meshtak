@@ -1,91 +1,48 @@
 #!/usr/bin/env python3
+import logging
 import os
-import signal
-import subprocess
-import sys
-import time
+import threading
 
-APP_DIR = "/opt/meshtak"
-VENV_PYTHON = f"{APP_DIR}/venv/bin/python"
+from meshtak import MeshTAK
+from webui import MeshTAKWebUI
 
-MESHTAK_CMD = [VENV_PYTHON, f"{APP_DIR}/meshtak.py"]
-WEBUI_CMD = [VENV_PYTHON, f"{APP_DIR}/webui.py"]
-
-children = []
-stopping = False
+BASE_DIR = "/opt/meshtak"
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_PATH = os.path.join(LOG_DIR, "wrapper.log")
 
 
-def log(message):
-    print(f"[WRAPPER] {message}", flush=True)
+def ensure_log_dir():
+    os.makedirs(LOG_DIR, exist_ok=True)
 
 
-def start_child(name, cmd):
-    log(f"Starting {name}: {' '.join(cmd)}")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=APP_DIR,
-        env=os.environ.copy(),
+def setup_logging():
+    ensure_log_dir()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_PATH),
+            logging.StreamHandler()
+        ]
     )
-    children.append((name, proc))
-    return proc
-
-
-def terminate_children():
-    global stopping
-    if stopping:
-        return
-    stopping = True
-
-    log("Stopping child processes")
-
-    for name, proc in children:
-        if proc.poll() is None:
-            try:
-                log(f"Terminating {name} (pid={proc.pid})")
-                proc.terminate()
-            except Exception as exc:
-                log(f"Failed to terminate {name}: {exc}")
-
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        alive = [proc for _, proc in children if proc.poll() is None]
-        if not alive:
-            break
-        time.sleep(0.25)
-
-    for name, proc in children:
-        if proc.poll() is None:
-            try:
-                log(f"Killing {name} (pid={proc.pid})")
-                proc.kill()
-            except Exception as exc:
-                log(f"Failed to kill {name}: {exc}")
-
-
-def handle_signal(signum, frame):
-    log(f"Received signal {signum}")
-    terminate_children()
-    sys.exit(0)
 
 
 def main():
-    os.chdir(APP_DIR)
+    setup_logging()
+    log = logging.getLogger("meshtak.wrapper")
 
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    log.info("Starting MeshTAK wrapper")
 
-    start_child("meshtak", MESHTAK_CMD)
-    start_child("webui", WEBUI_CMD)
+    mesh = MeshTAK()
 
-    while True:
-        time.sleep(2)
+    # Run backend in thread
+    backend_thread = threading.Thread(target=mesh.start, daemon=True)
+    backend_thread.start()
 
-        for name, proc in children:
-            rc = proc.poll()
-            if rc is not None:
-                log(f"{name} exited with code {rc}")
-                terminate_children()
-                sys.exit(rc if isinstance(rc, int) else 1)
+    # Run Web UI (blocking)
+    ui = MeshTAKWebUI(mesh=mesh)
+    ui.run()
 
 
 if __name__ == "__main__":

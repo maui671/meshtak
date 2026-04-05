@@ -11,5 +11,8 @@ rm -f "${SERVICE_FILE}"
 systemctl daemon-reload
 
 rm -rf "${INSTALL_DIR}"
+rm -rf /etc/meshtak
+rm -rf /etc/default/meshtak
+rm -f /var/log/meshtak.log
 
 echo "MeshTAK removed."

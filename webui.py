@@ -1,458 +1,373 @@
 #!/usr/bin/env python3
+import copy
+import json
 import logging
 import os
 import ssl
-import subprocess
 import threading
 import time
-from collections import deque
+from typing import Any, Dict, Optional
 
 from flask import Flask, jsonify, render_template, request
 
-from config_store import get_tak_config, load_config, update_config
-from node_store import (
-    enqueue_message,
-    get_nodes,
-    list_message_events,
-    list_queued_messages,
-    prune_old_nodes,
-)
+from meshtak import MeshTAK, CONFIG_PATH
 
-APP_DIR = "/opt/meshtak"
-LOG_FILE = os.environ.get("MESHTAK_LOG_FILE", "/var/log/meshtak.log")
-SERVICE_NAME = os.environ.get("MESHTAK_SERVICE_NAME", "meshtak")
-CERT_FILE = os.environ.get("MESHTAK_CERT_FILE", f"{APP_DIR}/certs/meshtak.crt")
-KEY_FILE = os.environ.get("MESHTAK_KEY_FILE", f"{APP_DIR}/certs/meshtak.key")
-NODE_PRUNE_SECONDS = int(os.environ.get("MESHTAK_NODE_PRUNE_SECONDS", "86400"))
+BASE_DIR = "/opt/meshtak"
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
+CERT_DIR = os.path.join(BASE_DIR, "certs")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 
-app = Flask(
-    __name__,
-    template_folder=os.path.join(APP_DIR, "templates"),
-    static_folder=os.path.join(APP_DIR, "static"),
-)
-
-logger = logging.getLogger("meshtak.webui")
-logger.setLevel(logging.INFO)
-
-_recent_log = deque(maxlen=200)
-_recent_tak = deque(maxlen=100)
-_recent_errors = deque(maxlen=100)
+CERT_PATH = os.path.join(CERT_DIR, "meshtak.crt")
+KEY_PATH = os.path.join(CERT_DIR, "meshtak.key")
+LOG_PATH = os.path.join(LOG_DIR, "webui.log")
 
 
-def log_event(message, category="INFO"):
-    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {category} {message}"
-    _recent_log.append(line)
-
-    category_upper = str(category).upper()
-    if category_upper in ("TAK", "COT", "PUSH"):
-        _recent_tak.append(line)
-    if category_upper in ("ERROR", "WARN", "WARNING", "EXCEPTION"):
-        _recent_errors.append(line)
-
-    try:
-        logger.info(line)
-    except Exception:
-        pass
+def ensure_log_dir() -> None:
+    os.makedirs(LOG_DIR, exist_ok=True)
 
 
-def tail_lines(path, limit=200):
-    if not os.path.exists(path):
-        return []
+def build_logger() -> logging.Logger:
+    ensure_log_dir()
+    logger = logging.getLogger("meshtak.webui")
+    logger.setLevel(logging.INFO)
 
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return [line.rstrip("\n") for line in f.readlines()[-limit:]]
-    except Exception as exc:
-        return [f"ERROR reading log file {path}: {exc}"]
+    if logger.handlers:
+        return logger
 
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
-def refresh_recent_buffers_from_log():
-    lines = tail_lines(LOG_FILE, 400)
+    file_handler = logging.FileHandler(LOG_PATH)
+    file_handler.setFormatter(formatter)
 
-    _recent_log.clear()
-    _recent_tak.clear()
-    _recent_errors.clear()
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
 
-    for line in lines:
-        _recent_log.append(line)
-
-        upper = line.upper()
-        if (
-            " TAK " in upper
-            or " COT " in upper
-            or "PUSHED TO TAK" in upper
-            or "TAK <-" in upper
-            or "TAK:" in upper
-        ):
-            _recent_tak.append(line)
-
-        if (
-            " ERROR " in upper
-            or " EXCEPTION " in upper
-            or " TRACEBACK" in upper
-            or " WARNING " in upper
-            or " WARN " in upper
-            or upper.startswith("ERROR ")
-        ):
-            _recent_errors.append(line)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    logger.propagate = False
+    return logger
 
 
-def get_service_status():
-    try:
-        proc = subprocess.run(
-            ["systemctl", "is-active", SERVICE_NAME],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
+log = build_logger()
+
+
+def _deep_merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _boolify(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return bool(value)
+
+
+class MeshTAKWebUI:
+    def __init__(self, mesh: Optional[MeshTAK] = None):
+        self.mesh = mesh or MeshTAK()
+        self.app = Flask(
+            __name__,
+            static_folder=STATIC_DIR,
+            template_folder=TEMPLATE_DIR,
         )
-        status = (proc.stdout or proc.stderr or "").strip().lower()
-        return status or "unknown"
-    except Exception:
-        return "unknown"
+        self._config_lock = threading.RLock()
+        self._register_routes()
 
+    def _load_config_from_disk(self) -> Dict[str, Any]:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-def get_web_config():
-    cfg = load_config()
-    return cfg.get("web", {})
+    def _save_config_to_disk(self, config: Dict[str, Any]) -> None:
+        tmp_path = f"{CONFIG_PATH}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CONFIG_PATH)
 
+    def _config_view(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        connection = config.get("connection", {})
+        tak = config.get("tak", {})
+        web = config.get("web", {})
 
-def format_nodes_for_ui():
-    nodes = get_nodes()
-    if not isinstance(nodes, dict):
-        return []
-
-    formatted = []
-    for node_id, node in nodes.items():
-        if not isinstance(node, dict):
-            continue
-
-        item = dict(node)
-        item["node_id"] = str(item.get("node_id") or node_id)
-
-        try:
-            if item.get("lat") is not None:
-                item["lat"] = float(item["lat"])
-        except Exception:
-            pass
-
-        try:
-            if item.get("lon") is not None:
-                item["lon"] = float(item["lon"])
-        except Exception:
-            pass
-
-        try:
-            if item.get("hae") is not None and item.get("hae") != "":
-                item["hae"] = float(item["hae"])
-        except Exception:
-            pass
-
-        try:
-            if item.get("last_seen") is not None:
-                item["last_seen"] = float(item["last_seen"])
-        except Exception:
-            pass
-
-        formatted.append(item)
-
-    formatted.sort(
-        key=lambda n: (
-            0 if n.get("last_seen") else 1,
-            -(float(n.get("last_seen", 0)) if n.get("last_seen") else 0),
-            str(n.get("callsign") or ""),
-            str(n.get("node_id") or ""),
-        )
-    )
-    return formatted
-
-
-def format_message_events(limit=100):
-    events = list_message_events(limit=limit)
-    formatted = []
-
-    for item in events:
-        if not isinstance(item, dict):
-            continue
-
-        event = dict(item)
-
-        try:
-            event["timestamp"] = float(event.get("timestamp", 0))
-        except Exception:
-            event["timestamp"] = 0.0
-
-        try:
-            event["channel"] = int(event.get("channel", 0))
-        except Exception:
-            event["channel"] = 0
-
-        event["direction"] = str(event.get("direction", "")).strip().lower()
-        event["text"] = str(event.get("text", "")).strip()
-        event["local_node_id"] = str(event.get("local_node_id", "")).strip()
-        event["local_callsign"] = str(event.get("local_callsign", "")).strip()
-        event["peer_node_id"] = str(event.get("peer_node_id", "")).strip()
-        event["peer_callsign"] = str(event.get("peer_callsign", "")).strip()
-        event["destination"] = str(event.get("destination", "")).strip()
-        event["transport"] = str(event.get("transport", "")).strip()
-        event["raw_portnum"] = str(event.get("raw_portnum", "")).strip()
-        event["message_id"] = str(event.get("message_id", "")).strip()
-        event["is_broadcast"] = bool(event.get("is_broadcast", False))
-
-        extra = event.get("extra", {})
-        if not isinstance(extra, dict):
-            extra = {}
-        event["extra"] = extra
-
-        formatted.append(event)
-
-    return formatted
-
-
-def background_maintenance():
-    while True:
-        try:
-            prune_old_nodes(NODE_PRUNE_SECONDS)
-        except Exception as exc:
-            log_event(f"Node prune failed: {exc}", "ERROR")
-
-        try:
-            refresh_recent_buffers_from_log()
-        except Exception as exc:
-            log_event(f"Log refresh failed: {exc}", "ERROR")
-
-        time.sleep(15)
-
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/healthz")
-def healthz():
-    web_cfg = get_web_config()
-    return jsonify(
-        {
-            "ok": True,
-            "service": get_service_status(),
-            "timestamp": time.time(),
+        return {
+            "connection": {
+                "type": connection.get("type", "serial"),
+                "port": connection.get("port", ""),
+                "host": connection.get("host", ""),
+            },
+            "tak": {
+                "enabled": _boolify(tak.get("enabled", False)),
+                "host": tak.get("host", ""),
+                "port": int(tak.get("port", 8088) or 8088),
+                "tls": _boolify(tak.get("tls", False)),
+            },
             "web": {
-                "host": str(web_cfg.get("host", "0.0.0.0")).strip() or "0.0.0.0",
-                "port": int(web_cfg.get("port", 8443)),
+                "host": web.get("host", "0.0.0.0"),
+                "port": int(web.get("port", 8443) or 8443),
+                "tls_cert": web.get("tls_cert", CERT_PATH),
+                "tls_key": web.get("tls_key", KEY_PATH),
             },
         }
-    )
 
-
-@app.route("/api/status", methods=["GET"])
-def api_status():
-    nodes = format_nodes_for_ui()
-    web_cfg = get_web_config()
-    tak_cfg = get_tak_config()
-
-    return jsonify(
-        {
-            "service": get_service_status(),
-            "timestamp": time.time(),
-            "https_port": int(web_cfg.get("port", 8443)),
-            "log_file": LOG_FILE,
-            "node_count": len(nodes),
-            "nodes": nodes,
-            "tak": {
-                "enabled": bool(tak_cfg.get("enabled", False)),
-                "host": str(tak_cfg.get("host", "")).strip(),
-                "port": int(tak_cfg.get("port", 8088)),
-            },
-            "recent_tak": list(_recent_tak)[-25:],
-            "recent_errors": list(_recent_errors)[-25:],
-            "recent_log": list(_recent_log)[-100:],
+    def _safe_node_payload(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "node_id": node.get("node_id", ""),
+            "display_name": node.get("display_name", ""),
+            "long_name": node.get("long_name", ""),
+            "short_name": node.get("short_name", ""),
+            "hw_model": node.get("hw_model", ""),
+            "role": node.get("role", ""),
+            "lat": node.get("lat"),
+            "lon": node.get("lon"),
+            "alt": node.get("alt"),
+            "batt": node.get("batt"),
+            "snr": node.get("snr"),
+            "rssi": node.get("rssi"),
+            "hop_limit": node.get("hop_limit"),
+            "via": node.get("via", ""),
+            "last_heard": node.get("last_heard"),
+            "updated_at": node.get("updated_at"),
         }
-    )
 
-
-@app.route("/api/nodes", methods=["GET"])
-def api_nodes():
-    return jsonify(
-        {
-            "timestamp": time.time(),
-            "nodes": format_nodes_for_ui(),
+    def _safe_message_payload(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": msg.get("id", ""),
+            "direction": msg.get("direction", ""),
+            "text": msg.get("text", ""),
+            "from_id": msg.get("from_id", ""),
+            "from_name": msg.get("from_name", ""),
+            "to_id": msg.get("to_id", ""),
+            "to_name": msg.get("to_name", ""),
+            "channel": msg.get("channel", ""),
+            "acked": bool(msg.get("acked", False)),
+            "timestamp": msg.get("timestamp"),
+            "created_at": msg.get("created_at"),
         }
-    )
 
+    def _register_routes(self) -> None:
+        app = self.app
 
-@app.route("/api/messages", methods=["GET"])
-def api_messages():
-    limit_raw = request.args.get("limit", "100")
-    try:
-        limit = max(1, min(500, int(limit_raw)))
-    except Exception:
-        limit = 100
+        @app.get("/")
+        def index():
+            return render_template("index.html")
 
-    return jsonify(
-        {
-            "timestamp": time.time(),
-            "messages": format_message_events(limit=limit),
-        }
-    )
+        @app.get("/health")
+        def health():
+            connected = False
+            try:
+                connected = self.mesh.is_connected()
+            except Exception:
+                connected = False
 
-
-@app.route("/api/queue", methods=["GET"])
-def api_queue():
-    limit_raw = request.args.get("limit", "50")
-    try:
-        limit = max(1, min(200, int(limit_raw)))
-    except Exception:
-        limit = 50
-
-    return jsonify(
-        {
-            "timestamp": time.time(),
-            "queue": list_queued_messages(limit=limit),
-        }
-    )
-
-
-@app.route("/api/send-message", methods=["POST"])
-def api_send_message():
-    payload = request.get_json(silent=True) or {}
-
-    text = str(payload.get("text") or "").strip()
-    destination = str(payload.get("destination") or "broadcast").strip() or "broadcast"
-    sender = str(payload.get("sender") or "webui").strip() or "webui"
-
-    try:
-        channel = int(payload.get("channel", 0))
-    except Exception:
-        channel = 0
-
-    want_ack = bool(payload.get("want_ack", False))
-
-    if not text:
-        return jsonify({"ok": False, "error": "Message text is required"}), 400
-
-    try:
-        item = enqueue_message(
-            text=text,
-            destination=destination,
-            channel=channel,
-            want_ack=want_ack,
-            sender=sender,
-        )
-        log_event(
-            f"Queued outbound Meshtastic message destination={destination} channel={channel} text={text}",
-            "INFO",
-        )
-        return jsonify({"ok": True, "queued": item})
-    except Exception as exc:
-        log_event(f"Failed to queue outbound message: {exc}", "ERROR")
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/api/config", methods=["GET"])
-def api_get_config():
-    cfg = load_config()
-    return jsonify({"ok": True, "config": cfg})
-
-
-@app.route("/api/config/tak", methods=["GET"])
-def api_get_tak_config():
-    tak_cfg = get_tak_config()
-    return jsonify(
-        {
-            "ok": True,
-            "tak": {
-                "enabled": bool(tak_cfg.get("enabled", False)),
-                "host": str(tak_cfg.get("host", "")).strip(),
-                "port": int(tak_cfg.get("port", 8088)),
-            },
-        }
-    )
-
-
-@app.route("/api/config/tak", methods=["POST"])
-def api_update_tak_config():
-    payload = request.get_json(silent=True) or {}
-
-    enabled = bool(payload.get("enabled", False))
-    host = str(payload.get("host", "")).strip()
-
-    try:
-        port = int(payload.get("port", 8088))
-    except Exception:
-        return jsonify({"ok": False, "error": "TAK port must be numeric"}), 400
-
-    if port < 1 or port > 65535:
-        return jsonify({"ok": False, "error": "TAK port must be between 1 and 65535"}), 400
-
-    if enabled and not host:
-        return jsonify({"ok": False, "error": "TAK host is required when TAK forwarding is enabled"}), 400
-
-    try:
-        cfg = update_config(
-            {
-                "tak": {
-                    "enabled": enabled,
-                    "host": host,
-                    "port": port,
+            return jsonify(
+                {
+                    "ok": True,
+                    "service": "meshtak",
+                    "connected": connected,
+                    "time": int(time.time()),
                 }
+            )
+
+        @app.get("/api/status")
+        def api_status():
+            stats = self.mesh.store.stats()
+            config = self.mesh.get_config()
+            state = {
+                "running": self.mesh.running,
+                "connected": self.mesh.is_connected(),
+                "connection_type": config.get("connection", {}).get("type", "serial"),
+                "tak_enabled": _boolify(config.get("tak", {}).get("enabled", False)),
+                "tak_queue_count": stats.get("queue_count", 0),
+                "stats": stats,
+                "updated_at": int(time.time()),
             }
+            return jsonify(state)
+
+        @app.get("/api/config")
+        def api_get_config():
+            config = self.mesh.get_config()
+            return jsonify(self._config_view(config))
+
+        @app.post("/api/config")
+        def api_save_config():
+            payload = request.get_json(silent=True) or {}
+            if not isinstance(payload, dict):
+                return jsonify({"ok": False, "error": "Invalid JSON payload"}), 400
+
+            with self._config_lock:
+                current = self._load_config_from_disk()
+                merged = _deep_merge(current, payload)
+
+                connection = merged.setdefault("connection", {})
+                tak = merged.setdefault("tak", {})
+                web = merged.setdefault("web", {})
+
+                connection["type"] = str(connection.get("type", "serial")).strip().lower()
+                if connection["type"] not in {"serial", "tcp"}:
+                    return jsonify({"ok": False, "error": "connection.type must be serial or tcp"}), 400
+
+                if connection["type"] == "serial":
+                    connection["port"] = str(connection.get("port", "/dev/ttyACM0")).strip() or "/dev/ttyACM0"
+                    connection.pop("host", None)
+                else:
+                    connection["host"] = str(connection.get("host", "")).strip()
+                    if not connection["host"]:
+                        return jsonify({"ok": False, "error": "TCP host is required"}), 400
+                    connection.pop("port", None)
+
+                tak["enabled"] = _boolify(tak.get("enabled", False))
+                tak["host"] = str(tak.get("host", "")).strip()
+                tak["port"] = int(tak.get("port", 8088) or 8088)
+                tak["tls"] = _boolify(tak.get("tls", False))
+
+                web["host"] = str(web.get("host", "0.0.0.0")).strip() or "0.0.0.0"
+                web["port"] = int(web.get("port", 8443) or 8443)
+                web["tls_cert"] = str(web.get("tls_cert", CERT_PATH)).strip() or CERT_PATH
+                web["tls_key"] = str(web.get("tls_key", KEY_PATH)).strip() or KEY_PATH
+
+                self._save_config_to_disk(merged)
+                self.mesh.reload_config()
+
+            log.info("Configuration updated via Web UI")
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Configuration saved",
+                    "config": self._config_view(self.mesh.get_config()),
+                }
+            )
+
+        @app.get("/api/nodes")
+        def api_nodes():
+            nodes = [self._safe_node_payload(n) for n in self.mesh.store.get_nodes()]
+            return jsonify(
+                {
+                    "ok": True,
+                    "nodes": nodes,
+                    "count": len(nodes),
+                    "updated_at": int(time.time()),
+                }
+            )
+
+        @app.get("/api/messages")
+        def api_messages():
+            limit = request.args.get("limit", default=200, type=int)
+            limit = max(1, min(limit or 200, 1000))
+            messages = [self._safe_message_payload(m) for m in self.mesh.store.get_messages(limit=limit)]
+            return jsonify(
+                {
+                    "ok": True,
+                    "messages": messages,
+                    "count": len(messages),
+                    "updated_at": int(time.time()),
+                }
+            )
+
+        @app.post("/api/messages/send")
+        def api_send_message():
+            payload = request.get_json(silent=True) or {}
+            text = str(payload.get("text", "")).strip()
+            destination = str(payload.get("to", "")).strip() or None
+
+            if not text:
+                return jsonify({"ok": False, "error": "Message text is required"}), 400
+
+            self.mesh.queue_tx(text=text, to=destination)
+
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": "Queued for send",
+                    "queued": {
+                        "text": text,
+                        "to": destination,
+                    },
+                }
+            )
+
+        @app.get("/api/map")
+        def api_map():
+            nodes = []
+            for node in self.mesh.store.get_nodes():
+                if node.get("lat") is None or node.get("lon") is None:
+                    continue
+                nodes.append(
+                    {
+                        "node_id": node.get("node_id", ""),
+                        "display_name": node.get("display_name", ""),
+                        "lat": node.get("lat"),
+                        "lon": node.get("lon"),
+                        "alt": node.get("alt"),
+                        "last_heard": node.get("last_heard"),
+                        "batt": node.get("batt"),
+                        "snr": node.get("snr"),
+                        "rssi": node.get("rssi"),
+                    }
+                )
+
+            return jsonify(
+                {
+                    "ok": True,
+                    "nodes": nodes,
+                    "count": len(nodes),
+                    "updated_at": int(time.time()),
+                }
+            )
+
+        @app.get("/api/debug")
+        def api_debug():
+            stats = self.mesh.store.stats()
+            queue_items = self.mesh.store.get_queue()
+            return jsonify(
+                {
+                    "ok": True,
+                    "stats": stats,
+                    "connected": self.mesh.is_connected(),
+                    "config": self._config_view(self.mesh.get_config()),
+                    "queue_preview": queue_items[-10:],
+                    "updated_at": int(time.time()),
+                }
+            )
+
+    def run(self) -> None:
+        config = self.mesh.get_config()
+        web = config.get("web", {})
+        host = str(web.get("host", "0.0.0.0")).strip() or "0.0.0.0"
+        port = int(web.get("port", 8443) or 8443)
+        cert_path = str(web.get("tls_cert", CERT_PATH)).strip() or CERT_PATH
+        key_path = str(web.get("tls_key", KEY_PATH)).strip() or KEY_PATH
+
+        if not os.path.exists(cert_path):
+            raise RuntimeError(f"TLS certificate not found: {cert_path}")
+        if not os.path.exists(key_path):
+            raise RuntimeError(f"TLS key not found: {key_path}")
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+
+        log.info("Starting MeshTAK Web UI on https://%s:%s", host, port)
+        self.app.run(
+            host=host,
+            port=port,
+            ssl_context=context,
+            debug=False,
+            threaded=True,
+            use_reloader=False,
         )
-        tak_cfg = cfg.get("tak", {})
-        log_event(
-            f"Updated TAK config enabled={tak_cfg.get('enabled')} host={tak_cfg.get('host')} port={tak_cfg.get('port')}",
-            "INFO",
-        )
-        return jsonify(
-            {
-                "ok": True,
-                "tak": {
-                    "enabled": bool(tak_cfg.get("enabled", False)),
-                    "host": str(tak_cfg.get("host", "")).strip(),
-                    "port": int(tak_cfg.get("port", 8088)),
-                },
-            }
-        )
-    except Exception as exc:
-        log_event(f"Failed to update TAK config: {exc}", "ERROR")
-        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-def build_ssl_context():
-    if not (os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE)):
-        raise FileNotFoundError(
-            f"Missing TLS certificate or key: cert={CERT_FILE} key={KEY_FILE}"
-        )
-
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
-    return context
-
-
-def main():
-    os.makedirs(APP_DIR, exist_ok=True)
-    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-
-    refresh_recent_buffers_from_log()
-
-    maint = threading.Thread(target=background_maintenance, daemon=True)
-    maint.start()
-
-    web_cfg = get_web_config()
-    web_host = str(web_cfg.get("host", "0.0.0.0")).strip() or "0.0.0.0"
-    web_port = int(web_cfg.get("port", 8443))
-
-    log_event(f"WEB: Starting HTTPS server on {web_host}:{web_port}", "INFO")
-
-    ssl_context = build_ssl_context()
-    app.run(
-        host=web_host,
-        port=web_port,
-        ssl_context=ssl_context,
-        debug=False,
-        use_reloader=False,
-        threaded=True,
-    )
+def main() -> None:
+    ui = MeshTAKWebUI()
+    ui.run()
 
 
 if __name__ == "__main__":

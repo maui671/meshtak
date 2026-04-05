@@ -1,481 +1,445 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
-APP_NAME="MeshTAK"
-INSTALL_DIR="/opt/meshtak"
-VENV_DIR="${INSTALL_DIR}/venv"
-SERVICE_NAME="meshtak"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-ENV_FILE="/etc/default/${SERVICE_NAME}"
-LOG_FILE="/var/log/meshtak.log"
+set -Eeuo pipefail
+
+BASE_DIR="/opt/meshtak"
+VENV_DIR="$BASE_DIR/venv"
+DATA_DIR="$BASE_DIR/data"
+STATIC_DIR="$BASE_DIR/static"
+TEMPLATE_DIR="$BASE_DIR/templates"
+CERT_DIR="$BASE_DIR/certs"
+LOG_DIR="$BASE_DIR/logs"
+CONFIG_FILE="$BASE_DIR/config.json"
+SERVICE_FILE="/etc/systemd/system/meshtak.service"
 INSTALL_LOG="/var/log/meshtak-install.log"
+
 RUN_USER="tdcadmin"
 RUN_GROUP="tdcadmin"
 
-CERT_DIR="${INSTALL_DIR}/certs"
-CERT_FILE="${CERT_DIR}/meshtak.crt"
-KEY_FILE="${CERT_DIR}/meshtak.key"
-CONFIG_FILE="${INSTALL_DIR}/config.json"
-
 WEB_HOST="0.0.0.0"
 WEB_PORT="8443"
-NODE_PRUNE_SECONDS="86400"
+CERT_PATH="$CERT_DIR/meshtak.crt"
+KEY_PATH="$CERT_DIR/meshtak.key"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$SCRIPT_DIR"
 
-CONNECTION_MODE=""
-SERIAL_DEVICE=""
-MESHTASTIC_HOST=""
-MESHTASTIC_PORT="4403"
-
+CONNECTION_TYPE=""
+SERIAL_PORT=""
+TCP_HOST=""
 TAK_ENABLED="false"
 TAK_HOST=""
 TAK_PORT="8088"
+TAK_TLS="false"
 
-exec > >(tee -a "${INSTALL_LOG}") 2>&1
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$INSTALL_LOG"
+}
 
-bold() { echo -e "\033[1m$*\033[0m"; }
-info() { echo -e "[INFO] $*"; }
-ok()   { echo -e "[ OK ] $*"; }
-warn() { echo -e "[WARN] $*"; }
-fail() { echo -e "[FAIL] $*" >&2; exit 1; }
+fail() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$INSTALL_LOG" >&2
+  exit 1
+}
 
 require_root() {
-  [[ "${EUID}" -eq 0 ]] || fail "Run this script as root."
-}
-
-ensure_repo_files() {
-  local required=(
-    "requirements.txt"
-    "meshtak.py"
-    "meshtak_wrapper.py"
-    "webui.py"
-    "node_store.py"
-    "config_store.py"
-    "templates/index.html"
-    "static/app.js"
-    "static/styles.css"
-  )
-
-  for f in "${required[@]}"; do
-    [[ -f "${REPO_ROOT}/${f}" ]] || fail "Missing required file in repo: ${f}"
-  done
-
-  ok "Repo layout verified"
-}
-
-ensure_run_user() {
-  if id -u "${RUN_USER}" >/dev/null 2>&1; then
-    ok "Runtime user exists: ${RUN_USER}"
-    return
+  if [[ "${EUID}" -ne 0 ]]; then
+    fail "This installer must be run as root."
   fi
-
-  info "Creating runtime user ${RUN_USER}"
-  useradd -m -s /bin/bash "${RUN_USER}"
-  ok "Created runtime user ${RUN_USER}"
 }
 
-detect_pkg_mgr() {
-  if command -v apt-get >/dev/null 2>&1; then
-    PKG_MGR="apt"
-  elif command -v dnf >/dev/null 2>&1; then
-    PKG_MGR="dnf"
-  else
-    fail "No supported package manager found."
+ensure_user() {
+  if ! id "$RUN_USER" >/dev/null 2>&1; then
+    fail "User $RUN_USER does not exist. Create it first."
   fi
-  ok "Package manager detected: ${PKG_MGR}"
 }
 
-install_dependencies() {
-  info "Installing OS dependencies"
-
-  if [[ "${PKG_MGR}" == "apt" ]]; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y \
-      python3 python3-pip python3-venv python3-full \
-      openssl ca-certificates curl \
-      avahi-utils usbutils
-  else
-    dnf install -y \
-      python3 python3-pip python3-virtualenv \
-      openssl ca-certificates curl \
-      avahi nmap-ncat usbutils
-  fi
-
-  ok "Dependencies installed"
-}
-
-add_runtime_user_groups() {
-  for grp in dialout tty uucp plugdev; do
-    if getent group "${grp}" >/dev/null 2>&1; then
-      usermod -aG "${grp}" "${RUN_USER}" || true
-    fi
-  done
-  ok "Runtime user group memberships updated"
-}
-
-detect_serial_candidates() {
-  local candidates=()
-
-  if [[ -d /dev/serial/by-id ]]; then
-    while IFS= read -r -d '' dev; do
-      candidates+=("${dev}")
-    done < <(find /dev/serial/by-id -maxdepth 1 -type l -print0 2>/dev/null || true)
-  fi
-
-  while IFS= read -r -d '' dev; do
-    candidates+=("${dev}")
-  done < <(find /dev -maxdepth 1 \( -name 'ttyACM*' -o -name 'ttyUSB*' -o -name 'ttyAMA*' -o -name 'ttyS*' \) -print0 2>/dev/null || true)
-
-  printf '%s\n' "${candidates[@]}" | awk 'NF && !seen[$0]++'
-}
-
-prompt_connection_mode() {
-  echo
-  bold "Meshtastic connection mode"
-  echo "  1) Serial"
-  echo "  2) IP"
+prompt_yes_no() {
+  local prompt="$1"
+  local default="${2:-y}"
+  local answer
 
   while true; do
-    read -rp "Choose mode [1/2]: " choice
-    case "${choice}" in
-      1) CONNECTION_MODE="serial"; break ;;
-      2) CONNECTION_MODE="ip"; break ;;
-      *) warn "Enter 1 or 2." ;;
+    if [[ "$default" == "y" ]]; then
+      read -r -p "$prompt [Y/n]: " answer
+      answer="${answer:-y}"
+    else
+      read -r -p "$prompt [y/N]: " answer
+      answer="${answer:-n}"
+    fi
+
+    case "${answer,,}" in
+      y|yes) echo "y"; return 0 ;;
+      n|no) echo "n"; return 0 ;;
+      *) echo "Please answer y or n." ;;
     esac
   done
-
-  ok "Selected mode: ${CONNECTION_MODE}"
 }
 
-prompt_serial_device() {
-  mapfile -t devices < <(detect_serial_candidates)
+detect_serial_devices() {
+  local devices=()
+  local path
+
+  for path in /dev/serial/by-id/* /dev/ttyACM* /dev/ttyUSB*; do
+    [[ -e "$path" ]] || continue
+    devices+=("$path")
+  done
+
+  printf '%s\n' "${devices[@]}" | awk '!seen[$0]++'
+}
+
+choose_connection_type() {
+  local choice=""
 
   echo
-  bold "Serial device selection"
+  echo "--- Meshtastic Connection Type ---"
+  echo "1) Serial"
+  echo "2) IP"
 
-  if [[ ${#devices[@]} -eq 0 ]]; then
-    warn "No serial candidates were auto-detected."
-    read -rp "Enter serial device [/dev/ttyACM0]: " SERIAL_DEVICE
-    SERIAL_DEVICE="${SERIAL_DEVICE:-/dev/ttyACM0}"
-    ok "Selected serial device: ${SERIAL_DEVICE}"
-    return
+  while true; do
+    read -r -p "Choose connection type [1-2]: " choice
+    case "$choice" in
+      1)
+        CONNECTION_TYPE="serial"
+        return 0
+        ;;
+      2)
+        CONNECTION_TYPE="tcp"
+        return 0
+        ;;
+      *)
+        echo "Invalid selection. Enter 1 for Serial or 2 for IP."
+        ;;
+    esac
+  done
+}
+
+choose_serial_device() {
+  local serial_devices=()
+  local i=1
+  local choice=""
+
+  mapfile -t serial_devices < <(detect_serial_devices)
+
+  echo
+  echo "--- Serial Device Selection ---"
+
+  if (( ${#serial_devices[@]} == 0 )); then
+    echo "No serial devices auto-detected."
+    read -r -p "Enter serial device path manually [/dev/ttyACM0]: " SERIAL_PORT
+    SERIAL_PORT="${SERIAL_PORT:-/dev/ttyACM0}"
+    return 0
   fi
 
-  local i=1
-  for d in "${devices[@]}"; do
-    echo "  ${i}) ${d}"
+  for dev in "${serial_devices[@]}"; do
+    echo "$i) $dev"
     ((i++))
   done
-  echo "  m) manual entry"
+  echo "$i) Enter device path manually"
 
   while true; do
-    read -rp "Select device: " choice
-    if [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#devices[@]} )); then
-      SERIAL_DEVICE="${devices[$((choice-1))]}"
-      break
-    elif [[ "${choice}" == "m" || "${choice}" == "M" ]]; then
-      read -rp "Enter serial device [/dev/ttyACM0]: " SERIAL_DEVICE
-      SERIAL_DEVICE="${SERIAL_DEVICE:-/dev/ttyACM0}"
-      break
-    else
-      warn "Invalid choice."
+    read -r -p "Choose serial device [1-$i]: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+      if (( choice >= 1 && choice <= ${#serial_devices[@]} )); then
+        SERIAL_PORT="${serial_devices[$((choice - 1))]}"
+        return 0
+      elif (( choice == i )); then
+        read -r -p "Enter serial device path manually [/dev/ttyACM0]: " SERIAL_PORT
+        SERIAL_PORT="${SERIAL_PORT:-/dev/ttyACM0}"
+        return 0
+      fi
     fi
+    echo "Invalid selection."
   done
-
-  ok "Selected serial device: ${SERIAL_DEVICE}"
 }
 
-prompt_ip_target() {
+ask_ip_host() {
   echo
-  bold "Meshtastic IP configuration"
-
-  while true; do
-    read -rp "Meshtastic IP/hostname: " MESHTASTIC_HOST
-    [[ -n "${MESHTASTIC_HOST}" ]] && break
-    warn "Meshtastic IP/hostname is required."
-  done
-
-  read -rp "Meshtastic TCP port [4403]: " MESHTASTIC_PORT
-  MESHTASTIC_PORT="${MESHTASTIC_PORT:-4403}"
-  [[ "${MESHTASTIC_PORT}" =~ ^[0-9]+$ ]] || fail "Meshtastic TCP port must be numeric."
-
-  ok "Meshtastic target: ${MESHTASTIC_HOST}:${MESHTASTIC_PORT}"
+  echo "--- Meshtastic IP Configuration ---"
+  read -r -p "Enter Meshtastic device IP or hostname [192.168.1.100]: " TCP_HOST
+  TCP_HOST="${TCP_HOST:-192.168.1.100}"
 }
 
-prompt_tak_option() {
-  echo
-  bold "TAK forwarding"
-  read -rp "Configure TAK forwarding now? [y/N]: " choice
-  case "${choice:-N}" in
-    y|Y|yes|YES)
-      TAK_ENABLED="true"
-      while true; do
-        read -rp "TAK server IP/hostname: " TAK_HOST
-        [[ -n "${TAK_HOST}" ]] && break
-        warn "TAK server IP/hostname is required when enabling TAK."
-      done
+ask_questions() {
+  log "Starting installer prompts"
 
-      read -rp "TAK server port [8088]: " TAK_PORT
-      TAK_PORT="${TAK_PORT:-8088}"
-      [[ "${TAK_PORT}" =~ ^[0-9]+$ ]] || fail "TAK port must be numeric."
-      ok "TAK forwarding enabled: ${TAK_HOST}:${TAK_PORT}"
-      ;;
-    *)
-      TAK_ENABLED="false"
-      TAK_HOST=""
-      TAK_PORT="8088"
-      ok "TAK forwarding will start disabled and can be enabled later in the web UI"
-      ;;
-  esac
-}
+  choose_connection_type
 
-show_summary() {
-  echo
-  bold "Install summary"
-  echo "  Install dir: ${INSTALL_DIR}"
-  echo "  Runtime user: ${RUN_USER}"
-  echo "  Service: ${SERVICE_NAME}"
-  echo "  Web UI: https://<this-host>:${WEB_PORT}"
-  echo "  Mode: ${CONNECTION_MODE}"
-  if [[ "${CONNECTION_MODE}" == "serial" ]]; then
-    echo "  Serial device: ${SERIAL_DEVICE}"
+  if [[ "$CONNECTION_TYPE" == "serial" ]]; then
+    choose_serial_device
   else
-    echo "  Meshtastic target: ${MESHTASTIC_HOST}:${MESHTASTIC_PORT}"
+    ask_ip_host
   fi
-  echo "  TAK enabled: ${TAK_ENABLED}"
-  if [[ "${TAK_ENABLED}" == "true" ]]; then
-    echo "  TAK target: ${TAK_HOST}:${TAK_PORT}"
-  fi
+
   echo
+  echo "--- TAK Configuration ---"
+  local tak_choice
+  tak_choice="$(prompt_yes_no "Enable TAK forwarding?" "n")"
+  if [[ "$tak_choice" == "y" ]]; then
+    TAK_ENABLED="true"
+    read -r -p "TAK host [127.0.0.1]: " TAK_HOST
+    TAK_HOST="${TAK_HOST:-127.0.0.1}"
+
+    read -r -p "TAK port [8088]: " TAK_PORT
+    TAK_PORT="${TAK_PORT:-8088}"
+
+    local tls_choice
+    tls_choice="$(prompt_yes_no "Use TLS for TAK?" "n")"
+    if [[ "$tls_choice" == "y" ]]; then
+      TAK_TLS="true"
+    else
+      TAK_TLS="false"
+    fi
+  else
+    TAK_ENABLED="false"
+    TAK_HOST=""
+    TAK_PORT="8088"
+    TAK_TLS="false"
+  fi
+
+  echo
+  log "Prompt summary:"
+  log "  Connection type: $CONNECTION_TYPE"
+  if [[ "$CONNECTION_TYPE" == "serial" ]]; then
+    log "  Serial port: $SERIAL_PORT"
+  else
+    log "  TCP host: $TCP_HOST"
+  fi
+  log "  TAK enabled: $TAK_ENABLED"
+  log "  TAK host: ${TAK_HOST:-<disabled>}"
+  log "  TAK port: $TAK_PORT"
+  log "  TAK TLS: $TAK_TLS"
 }
 
-prepare_install_tree() {
-  info "Preparing install tree"
+install_packages() {
+  export DEBIAN_FRONTEND=noninteractive
 
-  mkdir -p "${INSTALL_DIR}"
-  mkdir -p "${INSTALL_DIR}/templates"
-  mkdir -p "${INSTALL_DIR}/static"
-  mkdir -p "${CERT_DIR}"
+  log "Updating apt cache"
+  apt-get update -y
 
-  ok "Install tree prepared"
+  log "Installing required packages"
+  apt-get install -y \
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    build-essential \
+    openssl \
+    ufw \
+    rsync \
+    ca-certificates
+}
+
+create_directories() {
+  log "Creating MeshTAK directories"
+  mkdir -p \
+    "$BASE_DIR" \
+    "$DATA_DIR" \
+    "$STATIC_DIR" \
+    "$TEMPLATE_DIR" \
+    "$CERT_DIR" \
+    "$LOG_DIR"
 }
 
 copy_project_files() {
-  info "Copying project files"
-
-  install -m 0644 "${REPO_ROOT}/meshtak.py" "${INSTALL_DIR}/meshtak.py"
-  install -m 0644 "${REPO_ROOT}/meshtak_wrapper.py" "${INSTALL_DIR}/meshtak_wrapper.py"
-  install -m 0644 "${REPO_ROOT}/webui.py" "${INSTALL_DIR}/webui.py"
-  install -m 0644 "${REPO_ROOT}/node_store.py" "${INSTALL_DIR}/node_store.py"
-  install -m 0644 "${REPO_ROOT}/config_store.py" "${INSTALL_DIR}/config_store.py"
-  install -m 0644 "${REPO_ROOT}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
-  install -m 0644 "${REPO_ROOT}/templates/index.html" "${INSTALL_DIR}/templates/index.html"
-  install -m 0644 "${REPO_ROOT}/static/app.js" "${INSTALL_DIR}/static/app.js"
-  install -m 0644 "${REPO_ROOT}/static/styles.css" "${INSTALL_DIR}/static/styles.css"
-
-  touch "${INSTALL_DIR}/nodes.json"
-  touch "${INSTALL_DIR}/message_queue.json"
-  touch "${LOG_FILE}"
-
-  ok "Project files copied"
+  log "Copying project files into $BASE_DIR"
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    --exclude 'venv' \
+    --exclude 'data' \
+    --exclude 'certs' \
+    --exclude 'logs' \
+    "$SOURCE_DIR"/ "$BASE_DIR"/
 }
 
-configure_python_venv() {
-  info "Creating Python virtual environment"
+create_venv() {
+  if [[ ! -d "$VENV_DIR" ]]; then
+    log "Creating Python virtual environment"
+    python3 -m venv "$VENV_DIR"
+  else
+    log "Using existing Python virtual environment"
+  fi
 
-  python3 -m venv "${VENV_DIR}"
-  "${VENV_DIR}/bin/pip" install --upgrade pip wheel setuptools
-  "${VENV_DIR}/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+  log "Upgrading pip/setuptools/wheel"
+  "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
 
-  ok "Python environment ready"
+  if [[ ! -f "$BASE_DIR/requirements.txt" ]]; then
+    fail "requirements.txt not found in $BASE_DIR"
+  fi
+
+  log "Installing Python requirements"
+  "$VENV_DIR/bin/pip" install -r "$BASE_DIR/requirements.txt"
 }
 
-write_config_file() {
-  info "Writing MeshTAK config file"
+write_config() {
+  log "Writing config file to $CONFIG_FILE"
 
-  cat > "${CONFIG_FILE}" <<EOF
+  if [[ "$CONNECTION_TYPE" == "serial" ]]; then
+    cat > "$CONFIG_FILE" <<EOF
 {
-  "meshtastic": {
-    "mode": "${CONNECTION_MODE}",
-    "serial_device": "${SERIAL_DEVICE}",
-    "host": "${MESHTASTIC_HOST}",
-    "port": ${MESHTASTIC_PORT}
+  "connection": {
+    "type": "serial",
+    "port": "$SERIAL_PORT"
   },
   "tak": {
-    "enabled": ${TAK_ENABLED},
-    "host": "${TAK_HOST}",
-    "port": ${TAK_PORT}
+    "enabled": $TAK_ENABLED,
+    "host": "$TAK_HOST",
+    "port": $TAK_PORT,
+    "tls": $TAK_TLS
   },
   "web": {
-    "host": "${WEB_HOST}",
-    "port": ${WEB_PORT}
+    "host": "$WEB_HOST",
+    "port": $WEB_PORT,
+    "tls_cert": "$CERT_PATH",
+    "tls_key": "$KEY_PATH"
   }
 }
 EOF
-
-  ok "Config written: ${CONFIG_FILE}"
+  else
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "connection": {
+    "type": "tcp",
+    "host": "$TCP_HOST"
+  },
+  "tak": {
+    "enabled": $TAK_ENABLED,
+    "host": "$TAK_HOST",
+    "port": $TAK_PORT,
+    "tls": $TAK_TLS
+  },
+  "web": {
+    "host": "$WEB_HOST",
+    "port": $WEB_PORT,
+    "tls_cert": "$CERT_PATH",
+    "tls_key": "$KEY_PATH"
+  }
 }
-
-write_environment_file() {
-  info "Writing environment file"
-
-  cat > "${ENV_FILE}" <<EOF
-MESHTAK_LOG_FILE=${LOG_FILE}
-MESHTAK_SERVICE_NAME=${SERVICE_NAME}
-MESHTAK_CERT_FILE=${CERT_FILE}
-MESHTAK_KEY_FILE=${KEY_FILE}
-MESHTAK_NODE_PRUNE_SECONDS=${NODE_PRUNE_SECONDS}
 EOF
-
-  ok "Environment file written: ${ENV_FILE}"
+  fi
 }
 
-generate_tls_cert() {
-  info "Generating self-signed TLS certificate"
+generate_cert() {
+  if [[ -f "$CERT_PATH" && -f "$KEY_PATH" ]]; then
+    log "Existing TLS certificate found, leaving in place"
+    return 0
+  fi
 
-  local cn
-  cn="$(hostname -f 2>/dev/null || hostname)"
+  log "Generating self-signed TLS certificate"
+  openssl req -x509 -nodes -days 3650 \
+    -newkey rsa:2048 \
+    -keyout "$KEY_PATH" \
+    -out "$CERT_PATH" \
+    -subj "/C=US/ST=GA/L=Local/O=MeshTAK/CN=meshtak"
+}
 
-  openssl req -x509 -nodes -newkey rsa:2048 \
-    -keyout "${KEY_FILE}" \
-    -out "${CERT_FILE}" \
-    -days 3650 \
-    -subj "/C=US/ST=Georgia/L=Robins_AFB/O=MeshTAK/OU=MeshTAK/CN=${cn}" >/dev/null 2>&1
+prepare_runtime_files() {
+  log "Preparing runtime files"
+  touch "$LOG_DIR/meshtak.log"
+  touch "$LOG_DIR/webui.log"
+  touch "$LOG_DIR/wrapper.log"
+}
 
-  ok "TLS certificate created"
+set_permissions() {
+  log "Setting ownership and permissions"
+  chown -R "$RUN_USER:$RUN_GROUP" "$BASE_DIR"
+
+  chmod 755 "$BASE_DIR"
+  chmod 755 "$DATA_DIR" "$STATIC_DIR" "$TEMPLATE_DIR" "$CERT_DIR" "$LOG_DIR"
+  chmod 600 "$KEY_PATH"
+  chmod 644 "$CERT_PATH" "$CONFIG_FILE"
+  chmod 664 "$LOG_DIR/meshtak.log" "$LOG_DIR/webui.log" "$LOG_DIR/wrapper.log"
+}
+
+ensure_serial_access() {
+  if getent group dialout >/dev/null 2>&1; then
+    if id -nG "$RUN_USER" | tr ' ' '\n' | grep -qx "dialout"; then
+      log "User $RUN_USER is already in dialout"
+    else
+      log "Adding $RUN_USER to dialout for serial access"
+      usermod -aG dialout "$RUN_USER"
+    fi
+  else
+    log "Group dialout not present, skipping serial group membership"
+  fi
 }
 
 write_systemd_service() {
-  info "Writing systemd unit"
-
-  cat > "${SERVICE_FILE}" <<EOF
+  log "Writing systemd service file"
+  cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=MeshTAK integrated bridge and HTTPS UI
+Description=MeshTAK Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=${RUN_USER}
-Group=${RUN_GROUP}
-WorkingDirectory=${INSTALL_DIR}
-EnvironmentFile=-${ENV_FILE}
-ExecStart=${VENV_DIR}/bin/python ${INSTALL_DIR}/meshtak_wrapper.py
+User=$RUN_USER
+Group=$RUN_GROUP
+WorkingDirectory=$BASE_DIR
+ExecStart=$VENV_DIR/bin/python $BASE_DIR/meshtak_wrapper.py
 Restart=always
 RestartSec=5
-StandardOutput=append:${LOG_FILE}
-StandardError=append:${LOG_FILE}
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-  ok "Systemd unit written"
 }
 
-set_permissions() {
-  info "Setting ownership and permissions"
-
-  chown -R "${RUN_USER}:${RUN_GROUP}" "${INSTALL_DIR}"
-  chown "${RUN_USER}:${RUN_GROUP}" "${LOG_FILE}"
-  chown root:root "${SERVICE_FILE}" "${ENV_FILE}"
-  chmod 0644 "${SERVICE_FILE}" "${ENV_FILE}"
-  chmod 0644 "${CERT_FILE}"
-  chmod 0600 "${KEY_FILE}"
-
-  ok "Permissions applied"
+configure_firewall() {
+  log "Opening HTTPS Web UI port 8443/tcp in UFW"
+  ufw allow 8443/tcp >/dev/null 2>&1 || true
 }
 
-open_firewall_port() {
-  if command -v ufw >/dev/null 2>&1; then
-    ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true
-    ok "UFW updated for ${WEB_PORT}/tcp"
-    return
-  fi
-
-  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
-    firewall-cmd --permanent --add-port="${WEB_PORT}/tcp" >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
-    ok "firewalld updated for ${WEB_PORT}/tcp"
-    return
-  fi
-
-  warn "No supported firewall manager detected. Port ${WEB_PORT}/tcp was not opened automatically."
-}
-
-enable_and_start_service() {
-  info "Enabling and starting ${SERVICE_NAME}"
-
+start_service() {
+  log "Reloading systemd"
   systemctl daemon-reload
-  systemctl enable "${SERVICE_NAME}" >/dev/null
-  systemctl restart "${SERVICE_NAME}"
 
-  sleep 3
+  log "Enabling meshtak service"
+  systemctl enable meshtak >/dev/null
 
-  if systemctl is-active --quiet "${SERVICE_NAME}"; then
-    ok "Service is active"
-  else
-    warn "Service did not come up cleanly. Showing status:"
-    systemctl --no-pager --full status "${SERVICE_NAME}" || true
-    fail "MeshTAK service failed to start"
-  fi
-}
+  log "Restarting meshtak service"
+  systemctl restart meshtak
 
-print_completion() {
-  local host_ip=""
-  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-
-  echo
-  bold "Install complete"
-  echo "  Service: ${SERVICE_NAME}"
-  echo "  Log: ${LOG_FILE}"
-  echo "  Config: ${CONFIG_FILE}"
-  echo "  UI: https://${host_ip:-<host-ip>}:${WEB_PORT}"
-  echo "  Install dir: ${INSTALL_DIR}"
-  echo
-  echo "Useful commands:"
-  echo "  systemctl status ${SERVICE_NAME}"
-  echo "  journalctl -u ${SERVICE_NAME} --no-pager -n 50"
-  echo "  tail -f ${LOG_FILE}"
-  echo
+  log "Service status:"
+  systemctl --no-pager --full status meshtak || true
 }
 
 main() {
   require_root
-  ensure_repo_files
-  ensure_run_user
-  detect_pkg_mgr
+  ensure_user
 
-  echo
-  bold "=== ${APP_NAME} install ==="
+  mkdir -p "$(dirname "$INSTALL_LOG")"
+  touch "$INSTALL_LOG"
+  chmod 644 "$INSTALL_LOG"
 
-  prompt_connection_mode
-  if [[ "${CONNECTION_MODE}" == "serial" ]]; then
-    prompt_serial_device
-    MESHTASTIC_HOST=""
-    MESHTASTIC_PORT="4403"
-  else
-    prompt_ip_target
-    SERIAL_DEVICE=""
-  fi
-  prompt_tak_option
-  show_summary
+  log "=== START MeshTAK install ==="
+  log "Source dir: $SOURCE_DIR"
+  log "Target dir: $BASE_DIR"
 
-  install_dependencies
-  add_runtime_user_groups
-  prepare_install_tree
+  ask_questions
+  install_packages
+  create_directories
   copy_project_files
-  configure_python_venv
-  write_config_file
-  write_environment_file
-  generate_tls_cert
-  write_systemd_service
+  create_venv
+  write_config
+  generate_cert
+  prepare_runtime_files
   set_permissions
-  open_firewall_port
-  enable_and_start_service
-  print_completion
+  ensure_serial_access
+  write_systemd_service
+  configure_firewall
+  start_service
+
+  log "=== MeshTAK install complete ==="
+  echo
+  echo "MeshTAK install complete."
+  echo "Web UI: https://<raspberry-pi-ip>:8443"
+  echo "Config: $CONFIG_FILE"
+  echo "Service: systemctl status meshtak"
+  echo "Logs: $LOG_DIR"
 }
 
 main "$@"
