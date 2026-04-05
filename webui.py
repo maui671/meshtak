@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import logging
 import os
 import ssl
@@ -10,13 +9,12 @@ from collections import deque
 
 from flask import Flask, jsonify, render_template, request
 
+from config_store import get_tak_config, load_config, update_config
 from node_store import enqueue_message, get_nodes, list_queued_messages, prune_old_nodes
 
 APP_DIR = "/opt/meshtak"
 LOG_FILE = os.environ.get("MESHTAK_LOG_FILE", "/var/log/meshtak.log")
 SERVICE_NAME = os.environ.get("MESHTAK_SERVICE_NAME", "meshtak")
-HTTPS_HOST = os.environ.get("MESHTAK_WEB_HOST", "0.0.0.0")
-HTTPS_PORT = int(os.environ.get("MESHTAK_WEB_PORT", "8443"))
 CERT_FILE = os.environ.get("MESHTAK_CERT_FILE", f"{APP_DIR}/certs/meshtak.crt")
 KEY_FILE = os.environ.get("MESHTAK_KEY_FILE", f"{APP_DIR}/certs/meshtak.key")
 NODE_PRUNE_SECONDS = int(os.environ.get("MESHTAK_NODE_PRUNE_SECONDS", "86400"))
@@ -73,7 +71,7 @@ def refresh_recent_buffers_from_log():
         _recent_log.append(line)
 
         upper = line.upper()
-        if " TAK " in upper or " COT " in upper or "PUSHED TO TAK" in upper or "TAK:" in upper:
+        if " TAK " in upper or " COT " in upper or "PUSHED TO TAK" in upper or "TAK <-" in upper or "TAK:" in upper:
             _recent_tak.append(line)
 
         if (
@@ -102,6 +100,11 @@ def get_service_status():
         return status
     except Exception:
         return "unknown"
+
+
+def get_web_config():
+    cfg = load_config()
+    return cfg.get("web", {})
 
 
 def format_nodes_for_ui():
@@ -176,11 +179,16 @@ def index():
 
 @app.route("/healthz")
 def healthz():
+    web_cfg = get_web_config()
     return jsonify(
         {
             "ok": True,
             "service": get_service_status(),
             "timestamp": time.time(),
+            "web": {
+                "host": web_cfg.get("host", "0.0.0.0"),
+                "port": int(web_cfg.get("port", 8443)),
+            },
         }
     )
 
@@ -188,15 +196,22 @@ def healthz():
 @app.route("/api/status", methods=["GET"])
 def api_status():
     nodes = format_nodes_for_ui()
+    web_cfg = get_web_config()
+    tak_cfg = get_tak_config()
 
     return jsonify(
         {
             "service": get_service_status(),
             "timestamp": time.time(),
-            "https_port": HTTPS_PORT,
+            "https_port": int(web_cfg.get("port", 8443)),
             "log_file": LOG_FILE,
             "node_count": len(nodes),
             "nodes": nodes,
+            "tak": {
+                "enabled": bool(tak_cfg.get("enabled", False)),
+                "host": str(tak_cfg.get("host", "")).strip(),
+                "port": int(tak_cfg.get("port", 8088)),
+            },
             "recent_tak": list(_recent_tak)[-25:],
             "recent_errors": list(_recent_errors)[-25:],
             "recent_log": list(_recent_log)[-100:],
@@ -267,6 +282,80 @@ def api_send_message():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/config", methods=["GET"])
+def api_get_config():
+    cfg = load_config()
+    return jsonify(
+        {
+            "ok": True,
+            "config": cfg,
+        }
+    )
+
+
+@app.route("/api/config/tak", methods=["GET"])
+def api_get_tak_config():
+    tak_cfg = get_tak_config()
+    return jsonify(
+        {
+            "ok": True,
+            "tak": {
+                "enabled": bool(tak_cfg.get("enabled", False)),
+                "host": str(tak_cfg.get("host", "")).strip(),
+                "port": int(tak_cfg.get("port", 8088)),
+            },
+        }
+    )
+
+
+@app.route("/api/config/tak", methods=["POST"])
+def api_update_tak_config():
+    payload = request.get_json(silent=True) or {}
+
+    enabled = bool(payload.get("enabled", False))
+    host = str(payload.get("host", "")).strip()
+
+    try:
+        port = int(payload.get("port", 8088))
+    except Exception:
+        return jsonify({"ok": False, "error": "TAK port must be numeric"}), 400
+
+    if port < 1 or port > 65535:
+        return jsonify({"ok": False, "error": "TAK port must be between 1 and 65535"}), 400
+
+    if enabled and not host:
+        return jsonify({"ok": False, "error": "TAK host is required when TAK forwarding is enabled"}), 400
+
+    try:
+        cfg = update_config(
+            {
+                "tak": {
+                    "enabled": enabled,
+                    "host": host,
+                    "port": port,
+                }
+            }
+        )
+        tak_cfg = cfg.get("tak", {})
+        log_event(
+            f"Updated TAK config enabled={tak_cfg.get('enabled')} host={tak_cfg.get('host')} port={tak_cfg.get('port')}",
+            "INFO",
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "tak": {
+                    "enabled": bool(tak_cfg.get("enabled", False)),
+                    "host": str(tak_cfg.get("host", "")).strip(),
+                    "port": int(tak_cfg.get("port", 8088)),
+                },
+            }
+        )
+    except Exception as exc:
+        log_event(f"Failed to update TAK config: {exc}", "ERROR")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 def build_ssl_context():
     if not (os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE)):
         raise FileNotFoundError(
@@ -287,15 +376,19 @@ def main():
     t = threading.Thread(target=background_maintenance, daemon=True)
     t.start()
 
+    web_cfg = get_web_config()
+    web_host = str(web_cfg.get("host", "0.0.0.0")).strip() or "0.0.0.0"
+    web_port = int(web_cfg.get("port", 8443))
+
     log_event(
-        f"WEB: Starting HTTPS server on {HTTPS_HOST}:{HTTPS_PORT}",
+        f"WEB: Starting HTTPS server on {web_host}:{web_port}",
         "INFO",
     )
 
     ssl_context = build_ssl_context()
     app.run(
-        host=HTTPS_HOST,
-        port=HTTPS_PORT,
+        host=web_host,
+        port=web_port,
         ssl_context=ssl_context,
         debug=False,
         use_reloader=False,

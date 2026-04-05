@@ -75,6 +75,36 @@
         </form>
       </section>
 
+      <section class="card card-config">
+        <div class="card-header">
+          <h2>TAK Forwarding</h2>
+        </div>
+
+        <form id="takConfigForm" class="form-stack">
+          <label class="checkbox-row">
+            <span>Enable TAK Forwarding</span>
+            <input id="takEnabled" type="checkbox">
+          </label>
+
+          <div class="form-row">
+            <label>
+              <span>TAK Host</span>
+              <input id="takHost" type="text" placeholder="tak-server.local or 10.0.0.5">
+            </label>
+
+            <label>
+              <span>TAK Port</span>
+              <input id="takPort" type="number" min="1" max="65535" step="1" value="8088">
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button type="submit">Save TAK Settings</button>
+            <div id="takConfigResult" class="muted"></div>
+          </div>
+        </form>
+      </section>
+
       <section class="card card-nodes">
         <div class="card-header">
           <h2>Observed Nodes</h2>
@@ -179,11 +209,81 @@
       }
     }
 
+    async function loadTakConfig() {
+      try {
+        const res = await fetch("/api/config/tak", { cache: "no-store" });
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        const tak = data.tak || {};
+        document.getElementById("takEnabled").checked = !!tak.enabled;
+        document.getElementById("takHost").value = tak.host || "";
+        document.getElementById("takPort").value = tak.port || 8088;
+      } catch (err) {
+        document.getElementById("takConfigResult").textContent = `Error loading TAK settings: ${err}`;
+      }
+    }
+
+    async function saveTakConfig(event) {
+      event.preventDefault();
+
+      const result = document.getElementById("takConfigResult");
+      result.textContent = "Saving...";
+
+      const payload = {
+        enabled: document.getElementById("takEnabled").checked,
+        host: document.getElementById("takHost").value.trim(),
+        port: Number(document.getElementById("takPort").value || 8088)
+      };
+
+      try {
+        const res = await fetch("/api/config/tak", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        result.textContent = "TAK settings saved.";
+        if (typeof refreshStatus === "function") {
+          await refreshStatus();
+        }
+      } catch (err) {
+        result.textContent = `Error: ${err}`;
+      }
+    }
+
     document.getElementById("sendMessageForm").addEventListener("submit", sendMessage);
+    document.getElementById("takConfigForm").addEventListener("submit", saveTakConfig);
 
     const originalRefreshStatus = refreshStatus;
     refreshStatus = async function () {
       await originalRefreshStatus();
+
+      try {
+        const statusRes = await fetch("/api/status", { cache: "no-store" });
+        if (!statusRes.ok) {
+          throw new Error(`HTTP ${statusRes.status}`);
+        }
+        const statusData = await statusRes.json();
+        const tak = statusData.tak || {};
+
+        document.getElementById("takEnabled").checked = !!tak.enabled;
+        document.getElementById("takHost").value = tak.host || "";
+        document.getElementById("takPort").value = tak.port || 8088;
+      } catch (err) {
+        document.getElementById("takConfigResult").textContent = `Error refreshing TAK status: ${err}`;
+      }
 
       try {
         const res = await fetch("/api/messages", { cache: "no-store" });
@@ -212,6 +312,8 @@
         document.getElementById("queuedMessages").textContent = `Error: ${err}`;
       }
     };
+
+    loadTakConfig();
   </script>
 </body>
 </html>

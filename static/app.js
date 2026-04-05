@@ -71,6 +71,48 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function formatDateTimeFromEpoch(epochSeconds) {
+  if (!epochSeconds) {
+    return "";
+  }
+
+  try {
+    return new Date(Number(epochSeconds) * 1000).toLocaleString();
+  } catch (_err) {
+    return String(epochSeconds);
+  }
+}
+
+function formatTimeFromEpoch(epochSeconds) {
+  if (!epochSeconds) {
+    return "";
+  }
+
+  try {
+    return new Date(Number(epochSeconds) * 1000).toLocaleTimeString();
+  } catch (_err) {
+    return String(epochSeconds);
+  }
+}
+
+function updateTakConfigSummary(tak) {
+  const resultEl = document.getElementById("takConfigResult");
+  if (!resultEl) {
+    return;
+  }
+
+  if (!tak) {
+    resultEl.textContent = "";
+    return;
+  }
+
+  if (tak.enabled) {
+    resultEl.textContent = `TAK enabled: ${tak.host || ""}:${tak.port ?? 8088}`;
+  } else {
+    resultEl.textContent = "TAK forwarding disabled.";
+  }
+}
+
 function refreshMap(nodes) {
   ensureMap();
   markersLayer.clearLayers();
@@ -93,9 +135,8 @@ function refreshMap(nodes) {
     const nodeId = node.node_id || "";
     const hae = node.hae ?? "";
     const source = node.source || "";
-    const lastSeen = node.last_seen
-      ? new Date(node.last_seen * 1000).toLocaleString()
-      : "";
+    const lastSeen = formatDateTimeFromEpoch(node.last_seen);
+    const uid = node.uid || "";
 
     const marker = L.marker([lat, lon]);
     marker.bindPopup(`
@@ -104,7 +145,8 @@ function refreshMap(nodes) {
       Lat/Lon: ${lat}, ${lon}<br>
       HAE: ${escapeHtml(hae)}<br>
       Source: ${escapeHtml(source)}<br>
-      Last Seen: ${escapeHtml(lastSeen)}
+      Last Seen: ${escapeHtml(lastSeen)}<br>
+      UID: ${escapeHtml(uid)}
     `);
 
     marker.addTo(markersLayer);
@@ -144,64 +186,103 @@ async function refreshStatus() {
           ? "inactive"
           : "unknown";
 
-    document.getElementById("serviceStatus").innerHTML =
-      `<span class="pill ${cls}">${service.toUpperCase()}</span>`;
+    const serviceStatusEl = document.getElementById("serviceStatus");
+    if (serviceStatusEl) {
+      serviceStatusEl.innerHTML =
+        `<span class="pill ${cls}">${escapeHtml(service.toUpperCase())}</span>`;
+    }
 
-    document.getElementById("nodeCount").textContent =
-      `Tracked nodes: ${data.node_count} | Updated: ${new Date(data.timestamp * 1000).toLocaleTimeString()} | UI Port: ${data.https_port}`;
+    const nodeCountEl = document.getElementById("nodeCount");
+    if (nodeCountEl) {
+      nodeCountEl.textContent =
+        `Tracked nodes: ${data.node_count ?? 0} | Updated: ${formatTimeFromEpoch(data.timestamp)} | UI Port: ${data.https_port ?? 8443}`;
+    }
 
-    document.getElementById("logPath").textContent =
-      `Log file: ${data.log_file}`;
+    const logPathEl = document.getElementById("logPath");
+    if (logPathEl) {
+      logPathEl.textContent = `Log file: ${data.log_file || ""}`;
+    }
 
-    document.getElementById("recentTak").textContent =
-      data.recent_tak && data.recent_tak.length
-        ? data.recent_tak.join("\n")
-        : "No TAK pushes yet.";
+    const recentTakEl = document.getElementById("recentTak");
+    if (recentTakEl) {
+      recentTakEl.textContent =
+        data.recent_tak && data.recent_tak.length
+          ? data.recent_tak.join("\n")
+          : "No TAK pushes yet.";
+    }
 
-    document.getElementById("recentErrors").textContent =
-      data.recent_errors && data.recent_errors.length
-        ? data.recent_errors.join("\n")
-        : "No recent errors.";
+    const recentErrorsEl = document.getElementById("recentErrors");
+    if (recentErrorsEl) {
+      recentErrorsEl.textContent =
+        data.recent_errors && data.recent_errors.length
+          ? data.recent_errors.join("\n")
+          : "No recent errors.";
+    }
 
-    document.getElementById("recentLog").textContent =
-      data.recent_log && data.recent_log.length
-        ? data.recent_log.join("\n")
-        : "No log data yet.";
+    const recentLogEl = document.getElementById("recentLog");
+    if (recentLogEl) {
+      recentLogEl.textContent =
+        data.recent_log && data.recent_log.length
+          ? data.recent_log.join("\n")
+          : "No log data yet.";
+    }
 
     const tbody = document.getElementById("nodesTable");
-    tbody.innerHTML = "";
+    if (tbody) {
+      tbody.innerHTML = "";
 
-    if (!data.nodes || !data.nodes.length) {
-      tbody.innerHTML = `<tr><td colspan="8">No nodes observed yet.</td></tr>`;
-    } else {
-      for (const node of data.nodes) {
-        const lastSeen = node.last_seen
-          ? new Date(node.last_seen * 1000).toLocaleTimeString()
-          : "";
+      if (!data.nodes || !data.nodes.length) {
+        tbody.innerHTML = `<tr><td colspan="8">No nodes observed yet.</td></tr>`;
+      } else {
+        for (const node of data.nodes) {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${escapeHtml(node.callsign || "")}</td>
+            <td>${escapeHtml(node.node_id || "")}</td>
+            <td>${escapeHtml(node.lat ?? "")}</td>
+            <td>${escapeHtml(node.lon ?? "")}</td>
+            <td>${escapeHtml(node.hae ?? "")}</td>
+            <td>${escapeHtml(node.source || "")}</td>
+            <td>${escapeHtml(formatTimeFromEpoch(node.last_seen))}</td>
+            <td>${escapeHtml(node.uid || "")}</td>
+          `;
+          tbody.appendChild(row);
+        }
+      }
+    }
 
-        const row = document.createElement("tr");
-        row.innerHTML = `
-          <td>${escapeHtml(node.callsign || "")}</td>
-          <td>${escapeHtml(node.node_id || "")}</td>
-          <td>${escapeHtml(node.lat ?? "")}</td>
-          <td>${escapeHtml(node.lon ?? "")}</td>
-          <td>${escapeHtml(node.hae ?? "")}</td>
-          <td>${escapeHtml(node.source || "")}</td>
-          <td>${escapeHtml(lastSeen)}</td>
-          <td>${escapeHtml(node.uid || "")}</td>
-        `;
-        tbody.appendChild(row);
+    if (typeof document !== "undefined") {
+      const takEnabledEl = document.getElementById("takEnabled");
+      const takHostEl = document.getElementById("takHost");
+      const takPortEl = document.getElementById("takPort");
+      if (data.tak) {
+        if (takEnabledEl) takEnabledEl.checked = !!data.tak.enabled;
+        if (takHostEl) takHostEl.value = data.tak.host || "";
+        if (takPortEl) takPortEl.value = data.tak.port ?? 8088;
+        updateTakConfigSummary(data.tak);
       }
     }
 
     refreshMap(data.nodes || []);
+    return data;
   } catch (err) {
-    document.getElementById("serviceStatus").innerHTML =
-      `<span class="pill inactive">UI ERROR</span>`;
-    document.getElementById("recentErrors").textContent = String(err);
+    const serviceStatusEl = document.getElementById("serviceStatus");
+    if (serviceStatusEl) {
+      serviceStatusEl.innerHTML =
+        `<span class="pill inactive">UI ERROR</span>`;
+    }
+
+    const recentErrorsEl = document.getElementById("recentErrors");
+    if (recentErrorsEl) {
+      recentErrorsEl.textContent = String(err);
+    }
+
+    throw err;
   }
 }
 
 ensureMap();
-refreshStatus();
-setInterval(refreshStatus, 5000);
+refreshStatus().catch(() => {});
+setInterval(() => {
+  refreshStatus().catch(() => {});
+}, 5000);

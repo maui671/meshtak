@@ -12,13 +12,14 @@ INSTALL_LOG="/var/log/meshtak-install.log"
 RUN_USER="tdcadmin"
 RUN_GROUP="tdcadmin"
 
-WEB_HOST="0.0.0.0"
-WEB_PORT="8443"
-NODE_PRUNE_SECONDS="86400"
-
 CERT_DIR="${INSTALL_DIR}/certs"
 CERT_FILE="${CERT_DIR}/meshtak.crt"
 KEY_FILE="${CERT_DIR}/meshtak.key"
+CONFIG_FILE="${INSTALL_DIR}/config.json"
+
+WEB_HOST="0.0.0.0"
+WEB_PORT="8443"
+NODE_PRUNE_SECONDS="86400"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -26,6 +27,8 @@ CONNECTION_MODE=""
 SERIAL_DEVICE=""
 MESHTASTIC_HOST=""
 MESHTASTIC_PORT="4403"
+
+TAK_ENABLED="false"
 TAK_HOST=""
 TAK_PORT="8088"
 
@@ -48,6 +51,7 @@ ensure_repo_files() {
     "meshtak_wrapper.py"
     "webui.py"
     "node_store.py"
+    "config_store.py"
     "templates/index.html"
     "static/app.js"
     "static/styles.css"
@@ -200,21 +204,31 @@ prompt_ip_target() {
   ok "Meshtastic target: ${MESHTASTIC_HOST}:${MESHTASTIC_PORT}"
 }
 
-prompt_tak_target() {
+prompt_tak_option() {
   echo
-  bold "TAK target"
+  bold "TAK forwarding"
+  read -rp "Configure TAK forwarding now? [y/N]: " choice
+  case "${choice:-N}" in
+    y|Y|yes|YES)
+      TAK_ENABLED="true"
+      while true; do
+        read -rp "TAK server IP/hostname: " TAK_HOST
+        [[ -n "${TAK_HOST}" ]] && break
+        warn "TAK server IP/hostname is required when enabling TAK."
+      done
 
-  while true; do
-    read -rp "TAK server IP/hostname: " TAK_HOST
-    [[ -n "${TAK_HOST}" ]] && break
-    warn "TAK server IP/hostname is required."
-  done
-
-  read -rp "TAK server port [8088]: " TAK_PORT
-  TAK_PORT="${TAK_PORT:-8088}"
-  [[ "${TAK_PORT}" =~ ^[0-9]+$ ]] || fail "TAK port must be numeric."
-
-  ok "TAK target: ${TAK_HOST}:${TAK_PORT}"
+      read -rp "TAK server port [8088]: " TAK_PORT
+      TAK_PORT="${TAK_PORT:-8088}"
+      [[ "${TAK_PORT}" =~ ^[0-9]+$ ]] || fail "TAK port must be numeric."
+      ok "TAK forwarding enabled: ${TAK_HOST}:${TAK_PORT}"
+      ;;
+    *)
+      TAK_ENABLED="false"
+      TAK_HOST=""
+      TAK_PORT="8088"
+      ok "TAK forwarding will start disabled and can be enabled later in the web UI"
+      ;;
+  esac
 }
 
 show_summary() {
@@ -230,7 +244,10 @@ show_summary() {
   else
     echo "  Meshtastic target: ${MESHTASTIC_HOST}:${MESHTASTIC_PORT}"
   fi
-  echo "  TAK target: ${TAK_HOST}:${TAK_PORT}"
+  echo "  TAK enabled: ${TAK_ENABLED}"
+  if [[ "${TAK_ENABLED}" == "true" ]]; then
+    echo "  TAK target: ${TAK_HOST}:${TAK_PORT}"
+  fi
   echo
 }
 
@@ -252,6 +269,7 @@ copy_project_files() {
   install -m 0644 "${REPO_ROOT}/meshtak_wrapper.py" "${INSTALL_DIR}/meshtak_wrapper.py"
   install -m 0644 "${REPO_ROOT}/webui.py" "${INSTALL_DIR}/webui.py"
   install -m 0644 "${REPO_ROOT}/node_store.py" "${INSTALL_DIR}/node_store.py"
+  install -m 0644 "${REPO_ROOT}/config_store.py" "${INSTALL_DIR}/config_store.py"
   install -m 0644 "${REPO_ROOT}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
   install -m 0644 "${REPO_ROOT}/templates/index.html" "${INSTALL_DIR}/templates/index.html"
   install -m 0644 "${REPO_ROOT}/static/app.js" "${INSTALL_DIR}/static/app.js"
@@ -274,35 +292,30 @@ configure_python_venv() {
   ok "Python environment ready"
 }
 
-patch_meshtak_runtime() {
-  info "Applying runtime settings to meshtak.py"
+write_config_file() {
+  info "Writing MeshTAK config file"
 
-  python3 - <<PY
-from pathlib import Path
-import re
-
-path = Path("${INSTALL_DIR}/meshtak.py")
-text = path.read_text(encoding="utf-8")
-
-replacements = {
-    r'^CONNECTION_MODE = .*?$': 'CONNECTION_MODE = "${CONNECTION_MODE}"',
-    r'^MESHTASTIC_DEVICE = .*?$': 'MESHTASTIC_DEVICE = "${SERIAL_DEVICE}"',
-    r'^MESHTASTIC_HOST = .*?$': 'MESHTASTIC_HOST = "${MESHTASTIC_HOST}"',
-    r'^MESHTASTIC_PORT = .*?$': 'MESHTASTIC_PORT = ${MESHTASTIC_PORT}',
-    r'^TAK_HOST = .*?$': 'TAK_HOST = "${TAK_HOST}"',
-    r'^TAK_PORT = .*?$': 'TAK_PORT = ${TAK_PORT}',
-    r'^LOG_FILE_PATH = .*?$': 'LOG_FILE_PATH = "${LOG_FILE}"',
+  cat > "${CONFIG_FILE}" <<EOF
+{
+  "meshtastic": {
+    "mode": "${CONNECTION_MODE}",
+    "serial_device": "${SERIAL_DEVICE}",
+    "host": "${MESHTASTIC_HOST}",
+    "port": ${MESHTASTIC_PORT}
+  },
+  "tak": {
+    "enabled": ${TAK_ENABLED},
+    "host": "${TAK_HOST}",
+    "port": ${TAK_PORT}
+  },
+  "web": {
+    "host": "${WEB_HOST}",
+    "port": ${WEB_PORT}
+  }
 }
+EOF
 
-for pattern, repl in replacements.items():
-    text, count = re.subn(pattern, repl, text, flags=re.MULTILINE)
-    if count == 0:
-        raise SystemExit(f"Failed to patch setting with pattern: {pattern}")
-
-path.write_text(text, encoding="utf-8")
-PY
-
-  ok "meshtak.py patched"
+  ok "Config written: ${CONFIG_FILE}"
 }
 
 write_environment_file() {
@@ -311,8 +324,6 @@ write_environment_file() {
   cat > "${ENV_FILE}" <<EOF
 MESHTAK_LOG_FILE=${LOG_FILE}
 MESHTAK_SERVICE_NAME=${SERVICE_NAME}
-MESHTAK_WEB_HOST=${WEB_HOST}
-MESHTAK_WEB_PORT=${WEB_PORT}
 MESHTAK_CERT_FILE=${CERT_FILE}
 MESHTAK_KEY_FILE=${KEY_FILE}
 MESHTAK_NODE_PRUNE_SECONDS=${NODE_PRUNE_SECONDS}
@@ -420,12 +431,13 @@ print_completion() {
   bold "Install complete"
   echo "  Service: ${SERVICE_NAME}"
   echo "  Log: ${LOG_FILE}"
+  echo "  Config: ${CONFIG_FILE}"
   echo "  UI: https://${host_ip:-<host-ip>}:${WEB_PORT}"
   echo "  Install dir: ${INSTALL_DIR}"
   echo
   echo "Useful commands:"
   echo "  systemctl status ${SERVICE_NAME}"
-  echo "  journalctl -u ${SERVICE_NAME} -f"
+  echo "  journalctl -u ${SERVICE_NAME} --no-pager -n 50"
   echo "  tail -f ${LOG_FILE}"
   echo
 }
@@ -448,7 +460,7 @@ main() {
     prompt_ip_target
     SERIAL_DEVICE=""
   fi
-  prompt_tak_target
+  prompt_tak_option
   show_summary
 
   install_dependencies
@@ -456,7 +468,7 @@ main() {
   prepare_install_tree
   copy_project_files
   configure_python_venv
-  patch_meshtak_runtime
+  write_config_file
   write_environment_file
   generate_tls_cert
   write_systemd_service

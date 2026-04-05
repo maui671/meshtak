@@ -1,4 +1,4 @@
 meshtastic
-PyPubSub
-lxml
+pypubsub
 flask
+flask-cors
