@@ -7,8 +7,9 @@ import uuid
 
 NODES_FILE = "/opt/meshtak/nodes.json"
 QUEUE_FILE = "/opt/meshtak/message_queue.json"
+MESSAGES_FILE = "/opt/meshtak/messages.json"
 
-lock = threading.Lock()
+_lock = threading.Lock()
 
 
 def _ensure_parent(path):
@@ -17,12 +18,11 @@ def _ensure_parent(path):
 
 def _load_json(path, default):
     if not os.path.exists(path):
-      return default
+        return default
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data
+            return json.load(f)
     except Exception:
         return default
 
@@ -36,15 +36,13 @@ def _save_json(path, data):
 
 
 def _normalize_node_id(node_id):
-    return str(node_id).strip()
+    return str(node_id or "").strip()
 
 
 def get_nodes():
-    with lock:
+    with _lock:
         data = _load_json(NODES_FILE, {})
-        if isinstance(data, dict):
-            return data
-        return {}
+        return data if isinstance(data, dict) else {}
 
 
 def update_node(node_id, new_data):
@@ -52,7 +50,7 @@ def update_node(node_id, new_data):
     if not node_id:
         return
 
-    with lock:
+    with _lock:
         data = _load_json(NODES_FILE, {})
         if not isinstance(data, dict):
             data = {}
@@ -76,7 +74,7 @@ def delete_node(node_id):
     if not node_id:
         return
 
-    with lock:
+    with _lock:
         data = _load_json(NODES_FILE, {})
         if not isinstance(data, dict):
             data = {}
@@ -87,8 +85,31 @@ def delete_node(node_id):
 
 
 def clear_nodes():
-    with lock:
+    with _lock:
         _save_json(NODES_FILE, {})
+
+
+def prune_old_nodes(max_age_seconds=86400):
+    cutoff = time.time() - int(max_age_seconds)
+
+    with _lock:
+        data = _load_json(NODES_FILE, {})
+        if not isinstance(data, dict):
+            data = {}
+
+        kept = {}
+        for node_id, node in data.items():
+            if not isinstance(node, dict):
+                continue
+            try:
+                last_seen = float(node.get("last_seen", 0))
+            except Exception:
+                last_seen = 0
+            if last_seen >= cutoff:
+                kept[node_id] = node
+
+        if kept != data:
+            _save_json(NODES_FILE, kept)
 
 
 def enqueue_message(
@@ -115,7 +136,7 @@ def enqueue_message(
         "status": "queued",
     }
 
-    with lock:
+    with _lock:
         queue = _load_json(QUEUE_FILE, [])
         if not isinstance(queue, list):
             queue = []
@@ -127,7 +148,7 @@ def enqueue_message(
 
 
 def list_queued_messages(limit=50):
-    with lock:
+    with _lock:
         queue = _load_json(QUEUE_FILE, [])
         if not isinstance(queue, list):
             queue = []
@@ -137,11 +158,11 @@ def list_queued_messages(limit=50):
             key=lambda x: float(x.get("created_at", 0)),
             reverse=True,
         )
-        return queue[: max(1, int(limit))]
+        return queue[:max(1, int(limit))]
 
 
 def dequeue_messages(limit=20):
-    with lock:
+    with _lock:
         queue = _load_json(QUEUE_FILE, [])
         if not isinstance(queue, list):
             queue = []
@@ -155,8 +176,6 @@ def dequeue_messages(limit=20):
                 and item.get("status") == "queued"
                 and len(ready) < int(limit)
             ):
-                item["status"] = "dispatched"
-                item["dispatched_at"] = time.time()
                 ready.append(item)
             else:
                 remaining.append(item)
@@ -166,24 +185,83 @@ def dequeue_messages(limit=20):
 
 
 def clear_message_queue():
-    with lock:
+    with _lock:
         _save_json(QUEUE_FILE, [])
 
 
-def prune_old_nodes(max_age_seconds=86400):
-    cutoff = time.time() - int(max_age_seconds)
+def append_message_event(
+    direction,
+    text,
+    local_node_id="",
+    local_callsign="",
+    peer_node_id="",
+    peer_callsign="",
+    channel=0,
+    destination="",
+    is_broadcast=False,
+    transport="meshtastic",
+    raw_portnum="",
+    message_id="",
+    ts=None,
+    extra=None,
+):
+    direction = str(direction or "").strip().lower()
+    if direction not in ("rx", "tx"):
+        raise ValueError("direction must be 'rx' or 'tx'")
 
-    with lock:
-        data = _load_json(NODES_FILE, {})
-        if not isinstance(data, dict):
-            data = {}
+    text = str(text or "").strip()
+    if not text:
+        raise ValueError("message text cannot be empty")
 
-        kept = {}
-        for node_id, node in data.items():
-            if not isinstance(node, dict):
-                continue
-            if float(node.get("last_seen", 0)) >= cutoff:
-                kept[node_id] = node
+    item = {
+        "id": str(uuid.uuid4()),
+        "timestamp": float(ts if ts is not None else time.time()),
+        "direction": direction,
+        "text": text,
+        "local_node_id": str(local_node_id or "").strip(),
+        "local_callsign": str(local_callsign or "").strip(),
+        "peer_node_id": str(peer_node_id or "").strip(),
+        "peer_callsign": str(peer_callsign or "").strip(),
+        "channel": int(channel),
+        "destination": str(destination or "").strip(),
+        "is_broadcast": bool(is_broadcast),
+        "transport": str(transport or "meshtastic").strip() or "meshtastic",
+        "raw_portnum": str(raw_portnum or "").strip(),
+        "message_id": str(message_id or "").strip(),
+    }
 
-        if kept != data:
-            _save_json(NODES_FILE, kept)
+    if isinstance(extra, dict) and extra:
+        item["extra"] = extra
+
+    with _lock:
+        messages = _load_json(MESSAGES_FILE, [])
+        if not isinstance(messages, list):
+            messages = []
+
+        messages.append(item)
+
+        if len(messages) > 1000:
+            messages = messages[-1000:]
+
+        _save_json(MESSAGES_FILE, messages)
+
+    return item
+
+
+def list_message_events(limit=100):
+    with _lock:
+        messages = _load_json(MESSAGES_FILE, [])
+        if not isinstance(messages, list):
+            messages = []
+
+        messages = sorted(
+            messages,
+            key=lambda x: float(x.get("timestamp", 0)),
+            reverse=True,
+        )
+        return messages[:max(1, int(limit))]
+
+
+def clear_message_events():
+    with _lock:
+        _save_json(MESSAGES_FILE, [])

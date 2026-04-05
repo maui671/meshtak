@@ -10,7 +10,13 @@ from collections import deque
 from flask import Flask, jsonify, render_template, request
 
 from config_store import get_tak_config, load_config, update_config
-from node_store import enqueue_message, get_nodes, list_queued_messages, prune_old_nodes
+from node_store import (
+    enqueue_message,
+    get_nodes,
+    list_message_events,
+    list_queued_messages,
+    prune_old_nodes,
+)
 
 APP_DIR = "/opt/meshtak"
 LOG_FILE = os.environ.get("MESHTAK_LOG_FILE", "/var/log/meshtak.log")
@@ -71,7 +77,13 @@ def refresh_recent_buffers_from_log():
         _recent_log.append(line)
 
         upper = line.upper()
-        if " TAK " in upper or " COT " in upper or "PUSHED TO TAK" in upper or "TAK <-" in upper or "TAK:" in upper:
+        if (
+            " TAK " in upper
+            or " COT " in upper
+            or "PUSHED TO TAK" in upper
+            or "TAK <-" in upper
+            or "TAK:" in upper
+        ):
             _recent_tak.append(line)
 
         if (
@@ -95,9 +107,7 @@ def get_service_status():
             check=False,
         )
         status = (proc.stdout or proc.stderr or "").strip().lower()
-        if not status:
-            return "unknown"
-        return status
+        return status or "unknown"
     except Exception:
         return "unknown"
 
@@ -157,6 +167,48 @@ def format_nodes_for_ui():
     return formatted
 
 
+def format_message_events(limit=100):
+    events = list_message_events(limit=limit)
+    formatted = []
+
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+
+        event = dict(item)
+
+        try:
+            event["timestamp"] = float(event.get("timestamp", 0))
+        except Exception:
+            event["timestamp"] = 0.0
+
+        try:
+            event["channel"] = int(event.get("channel", 0))
+        except Exception:
+            event["channel"] = 0
+
+        event["direction"] = str(event.get("direction", "")).strip().lower()
+        event["text"] = str(event.get("text", "")).strip()
+        event["local_node_id"] = str(event.get("local_node_id", "")).strip()
+        event["local_callsign"] = str(event.get("local_callsign", "")).strip()
+        event["peer_node_id"] = str(event.get("peer_node_id", "")).strip()
+        event["peer_callsign"] = str(event.get("peer_callsign", "")).strip()
+        event["destination"] = str(event.get("destination", "")).strip()
+        event["transport"] = str(event.get("transport", "")).strip()
+        event["raw_portnum"] = str(event.get("raw_portnum", "")).strip()
+        event["message_id"] = str(event.get("message_id", "")).strip()
+        event["is_broadcast"] = bool(event.get("is_broadcast", False))
+
+        extra = event.get("extra", {})
+        if not isinstance(extra, dict):
+            extra = {}
+        event["extra"] = extra
+
+        formatted.append(event)
+
+    return formatted
+
+
 def background_maintenance():
     while True:
         try:
@@ -186,7 +238,7 @@ def healthz():
             "service": get_service_status(),
             "timestamp": time.time(),
             "web": {
-                "host": web_cfg.get("host", "0.0.0.0"),
+                "host": str(web_cfg.get("host", "0.0.0.0")).strip() or "0.0.0.0",
                 "port": int(web_cfg.get("port", 8443)),
             },
         }
@@ -215,7 +267,6 @@ def api_status():
             "recent_tak": list(_recent_tak)[-25:],
             "recent_errors": list(_recent_errors)[-25:],
             "recent_log": list(_recent_log)[-100:],
-            "queued_messages": list_queued_messages(limit=25),
         }
     )
 
@@ -232,6 +283,22 @@ def api_nodes():
 
 @app.route("/api/messages", methods=["GET"])
 def api_messages():
+    limit_raw = request.args.get("limit", "100")
+    try:
+        limit = max(1, min(500, int(limit_raw)))
+    except Exception:
+        limit = 100
+
+    return jsonify(
+        {
+            "timestamp": time.time(),
+            "messages": format_message_events(limit=limit),
+        }
+    )
+
+
+@app.route("/api/queue", methods=["GET"])
+def api_queue():
     limit_raw = request.args.get("limit", "50")
     try:
         limit = max(1, min(200, int(limit_raw)))
@@ -241,7 +308,7 @@ def api_messages():
     return jsonify(
         {
             "timestamp": time.time(),
-            "messages": list_queued_messages(limit=limit),
+            "queue": list_queued_messages(limit=limit),
         }
     )
 
@@ -285,12 +352,7 @@ def api_send_message():
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
     cfg = load_config()
-    return jsonify(
-        {
-            "ok": True,
-            "config": cfg,
-        }
-    )
+    return jsonify({"ok": True, "config": cfg})
 
 
 @app.route("/api/config/tak", methods=["GET"])
@@ -373,17 +435,14 @@ def main():
 
     refresh_recent_buffers_from_log()
 
-    t = threading.Thread(target=background_maintenance, daemon=True)
-    t.start()
+    maint = threading.Thread(target=background_maintenance, daemon=True)
+    maint.start()
 
     web_cfg = get_web_config()
     web_host = str(web_cfg.get("host", "0.0.0.0")).strip() or "0.0.0.0"
     web_port = int(web_cfg.get("port", 8443))
 
-    log_event(
-        f"WEB: Starting HTTPS server on {web_host}:{web_port}",
-        "INFO",
-    )
+    log_event(f"WEB: Starting HTTPS server on {web_host}:{web_port}", "INFO")
 
     ssl_context = build_ssl_context()
     app.run(
