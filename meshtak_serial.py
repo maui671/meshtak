@@ -6,6 +6,7 @@ import socket
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from node_store import update_node
 
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
@@ -98,6 +99,7 @@ def get_callsign(node_id: str) -> str:
         node_id,
     )
     node_callsigns[node_id] = callsign
+    update_node(node_id, {"callsign": callsign})
     return callsign
 
 
@@ -170,11 +172,20 @@ def handle_position(node_id: str, pos: dict, source: str):
     if not valid_position(lat, lon):
         return
 
+    callsign = get_callsign(node_id)
+    hae = get_hae(pos)
+
+    update_node(node_id, {
+        "callsign": callsign,
+        "lat": lat,
+        "lon": lon,
+        "hae": hae,
+        "source": source
+    })
+
     if not should_send(node_id, pos):
         return
 
-    callsign = get_callsign(node_id)
-    hae = get_hae(pos)
     pos_time = pos.get("time")
 
     send_cot(node_id, callsign, lat, lon, hae, source, pos_time=pos_time)

@@ -5,6 +5,7 @@ import json
 import subprocess
 from collections import deque
 from flask import Flask, jsonify, render_template
+from node_store import get_nodes
 
 app = Flask(__name__, template_folder="/opt/meshtak/templates", static_folder="/opt/meshtak/static")
 
@@ -77,7 +78,8 @@ def index():
 @app.route("/api/status")
 def api_status():
     lines = read_recent_lines(LOG_FILE)
-    nodes = parse_nodes(lines)
+    nodes_dict = get_nodes()
+    nodes = list(nodes_dict.values())
 
     tak_lines = [line for line in lines if "TAK <- " in line][-50:]
     error_lines = [line for line in lines if "ERROR" in line or "WARNING" in line][-50:]
