@@ -10,6 +10,11 @@ LOG_FILE="/var/log/meshtak.log"
 INSTALL_LOG="/var/log/meshtak-install.log"
 NODE_STORE_FILE="${INSTALL_DIR}/nodes.json"
 
+CONFIG_DIR="/etc/meshtak"
+CERT_DIR="${CONFIG_DIR}/certs"
+CERT_FILE="${CERT_DIR}/meshtak.crt"
+KEY_FILE="${CERT_DIR}/meshtak.key"
+
 MESHTAK_IP_FILE="meshtak_ip.py"
 MESHTAK_SERIAL_FILE="meshtak_serial.py"
 ACTIVE_PY="meshtak.py"
@@ -180,6 +185,7 @@ show_summary() {
   fi
   echo "  TAK target: ${TAK_HOST}:${TAK_PORT}"
   echo "  Install dir: ${INSTALL_DIR}"
+  echo "  Config dir: ${CONFIG_DIR}"
   echo "  Service: ${SERVICE_NAME}"
   echo
 }
@@ -188,10 +194,10 @@ install_dependencies() {
   info "Installing OS dependencies..."
 
   if [[ "${PKG_MGR}" == "dnf" ]]; then
-    dnf install -y python3 python3-pip python3-virtualenv python3-devel
+    dnf install -y python3 python3-pip python3-virtualenv python3-devel openssl
   else
     apt-get update
-    apt-get install -y python3 python3-pip python3-venv python3-full
+    apt-get install -y python3 python3-pip python3-venv python3-full openssl
   fi
 
   ok "OS dependencies installed"
@@ -203,6 +209,8 @@ prepare_install_dir() {
   rm -rf "${INSTALL_DIR:?}/"*
   mkdir -p "${INSTALL_DIR}/templates"
   mkdir -p "${INSTALL_DIR}/static"
+  mkdir -p "${CONFIG_DIR}"
+  mkdir -p "${CERT_DIR}"
   ok "Install directory ready"
 }
 
@@ -220,6 +228,21 @@ copy_repo_files() {
   chmod 644 "${INSTALL_DIR}/static/app.js"
 
   ok "Repo files copied"
+}
+
+generate_tls_certs() {
+  info "Generating self-signed TLS certificate..."
+
+  openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout "${KEY_FILE}" \
+    -out "${CERT_FILE}" \
+    -days 3650 \
+    -subj "/C=US/ST=GA/L=Robins_AFB/O=MeshTAK/OU=MeshTAK/CN=$(hostname -f 2>/dev/null || hostname)"
+
+  chmod 600 "${KEY_FILE}"
+  chmod 644 "${CERT_FILE}"
+
+  ok "TLS certificate created at ${CERT_FILE}"
 }
 
 patch_python_files() {
@@ -334,7 +357,9 @@ show_status() {
   echo "Active script:   ${INSTALL_DIR}/${ACTIVE_PY}"
   echo "Wrapper:         ${INSTALL_DIR}/${WRAPPER_PY}"
   echo "Node store:      ${NODE_STORE_FILE}"
-  echo "Web UI:          http://${host_ip}:8420"
+  echo "TLS cert:        ${CERT_FILE}"
+  echo "TLS key:         ${KEY_FILE}"
+  echo "Web UI:          https://${host_ip}:8443"
   echo "Python venv:     ${VENV_DIR}"
   echo "Install log:     ${INSTALL_LOG}"
   echo "Runtime log:     ${LOG_FILE}"
@@ -365,6 +390,7 @@ main() {
   install_dependencies
   prepare_install_dir
   copy_repo_files
+  generate_tls_certs
   patch_python_files
   setup_python_venv
   ensure_runtime_permissions

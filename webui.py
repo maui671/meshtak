@@ -18,6 +18,11 @@ LOG_FILE = "/var/log/meshtak.log"
 SERVICE_NAME = "meshtak"
 MAX_LOG_LINES = 500
 
+HTTPS_CERT_FILE = "/etc/meshtak/certs/meshtak.crt"
+HTTPS_KEY_FILE = "/etc/meshtak/certs/meshtak.key"
+HTTPS_HOST = "0.0.0.0"
+HTTPS_PORT = 8443
+
 
 def read_recent_lines(path, max_lines=MAX_LOG_LINES):
     if not os.path.exists(path):
@@ -68,8 +73,22 @@ def api_status():
         "recent_errors": error_lines[::-1],
         "recent_log": lines[-100:][::-1],
         "timestamp": time.time(),
+        "https_port": HTTPS_PORT,
     })
 
 
+def main():
+    ssl_context = None
+    if os.path.isfile(HTTPS_CERT_FILE) and os.path.isfile(HTTPS_KEY_FILE):
+        ssl_context = (HTTPS_CERT_FILE, HTTPS_KEY_FILE)
+
+    app.run(
+        host=HTTPS_HOST,
+        port=HTTPS_PORT,
+        debug=False,
+        ssl_context=ssl_context,
+    )
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8420, debug=False)
+    main()

@@ -4,6 +4,13 @@
   <meta charset="utf-8">
   <title>MeshTAK</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    crossorigin=""
+  />
+
   <style>
     body {
       background: #0f172a;
@@ -14,7 +21,7 @@
     }
 
     .wrap {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 20px;
     }
@@ -96,12 +103,20 @@
     .muted {
       color: #94a3b8;
     }
+
+    #map {
+      width: 100%;
+      height: 520px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1f2937;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="title">MeshTAK</div>
-    <div class="subtitle">Meshtastic to TAK bridge with local status UI</div>
+    <div class="subtitle">Meshtastic to TAK bridge with local HTTPS status UI</div>
 
     <div class="grid">
       <div class="card">
@@ -119,6 +134,14 @@
       <div class="card">
         <h2>Recent Errors</h2>
         <pre id="recentErrors">Loading...</pre>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Map</h2>
+        <div id="map"></div>
+        <div class="small" style="margin-top: 10px;">
+          If the basemap does not load, the node markers will still plot once coordinates are available.
+        </div>
       </div>
 
       <div class="card" style="grid-column: 1 / -1;">
@@ -151,6 +174,10 @@
     </div>
   </div>
 
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    crossorigin=""
+  ></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
