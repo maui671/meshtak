@@ -1,0 +1,4 @@
+meshtastic
+PyPubSub
+lxml
+flask

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MeshTAK</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .title {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      color: #94a3b8;
+      margin-bottom: 24px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    }
+
+    .card h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+
+    .active { background: #14532d; color: #dcfce7; }
+    .inactive { background: #7f1d1d; color: #fee2e2; }
+    .unknown { background: #3f3f46; color: #f4f4f5; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid #1f2937;
+      vertical-align: top;
+    }
+
+    pre {
+      background: #020617;
+      color: #cbd5e1;
+      padding: 12px;
+      border-radius: 10px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 360px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+
+    .small {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .muted {
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">MeshTAK</div>
+    <div class="subtitle">Meshtastic to TAK bridge with local status UI</div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Service Status</h2>
+        <div id="serviceStatus">Loading...</div>
+        <div class="small" id="nodeCount"></div>
+        <div class="small" id="logPath"></div>
+      </div>
+
+      <div class="card">
+        <h2>Recent TAK Pushes</h2>
+        <pre id="recentTak">Loading...</pre>
+      </div>
+
+      <div class="card">
+        <h2>Recent Errors</h2>
+        <pre id="recentErrors">Loading...</pre>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Nodes</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Callsign</th>
+                <th>Node ID</th>
+                <th>Latitude</th>
+                <th>Longitude</th>
+                <th>HAE</th>
+                <th>Source</th>
+                <th>UID</th>
+              </tr>
+            </thead>
+            <tbody id="nodesTable">
+              <tr><td colspan="7" class="muted">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Recent Log</h2>
+        <pre id="recentLog">Loading...</pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

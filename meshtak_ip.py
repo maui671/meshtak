@@ -28,8 +28,6 @@ TAK_PLATFORM = "TAK"
 TAK_OS = "Linux"
 TAK_VERSION = "4.10.3"
 
-# Per-gateway dedup only. This prevents one gateway from flooding TAK
-# if it receives duplicate packets or immediate repeats.
 SEND_INTERVAL_SECONDS = 2
 
 LOG_FILE_PATH = "/var/log/meshtak.log"
