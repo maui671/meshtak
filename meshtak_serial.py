@@ -21,8 +21,8 @@ TAK_PORT = 8088
 COT_TYPE = "a-f-G-U-C-I"
 STALE_MINUTES = 4
 
-GROUP_NAME = "Cyan"
-GROUP_ROLE = "Team Member"
+GROUP_NAME = "Orange"
+GROUP_ROLE = "RTO"
 
 TAK_DEVICE = "Meshtastic-Gateway"
 TAK_PLATFORM = "TAK"
@@ -78,16 +78,11 @@ def refresh_node_cache():
 
             for node_id, node in node_cache.items():
                 user = node.get("user", {})
-                callsign = make_callsign(
+                node_callsigns[node_id] = make_callsign(
                     user.get("longName", ""),
                     user.get("shortName", ""),
                     node_id,
                 )
-                node_callsigns[node_id] = callsign
-                update_node(node_id, {
-                    "node_id": node_id,
-                    "callsign": callsign
-                })
     except Exception as exc:
         logging.warning(f"Failed to refresh node cache: {exc}")
 
@@ -186,7 +181,7 @@ def handle_position(node_id: str, pos: dict, source: str):
         "lat": lat,
         "lon": lon,
         "hae": hae,
-        "source": source
+        "source": source,
     })
 
     if not should_send(node_id, pos):
@@ -220,7 +215,7 @@ def on_receive(packet, interface):
             node_callsigns[node_id] = callsign
             update_node(node_id, {
                 "node_id": node_id,
-                "callsign": callsign
+                "callsign": callsign,
             })
             logging.info(f"NAME <- {callsign} [{node_id}] port={port}")
             return

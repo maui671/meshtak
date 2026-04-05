@@ -8,12 +8,14 @@ SERVICE_NAME="meshtak"
 SERVICE_FILE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
 LOG_FILE="/var/log/meshtak.log"
 INSTALL_LOG="/var/log/meshtak-install.log"
+NODE_STORE_FILE="${INSTALL_DIR}/nodes.json"
 
 MESHTAK_IP_FILE="meshtak_ip.py"
 MESHTAK_SERIAL_FILE="meshtak_serial.py"
 ACTIVE_PY="meshtak.py"
 WRAPPER_PY="meshtak_wrapper.py"
 WEBUI_PY="webui.py"
+NODE_STORE_PY="node_store.py"
 
 CONNECTION_MODE=""
 SERIAL_DEVICE=""
@@ -41,6 +43,7 @@ ensure_repo_files() {
   [[ -f "./${MESHTAK_IP_FILE}" ]] || fail "${MESHTAK_IP_FILE} not found in repo root."
   [[ -f "./${WRAPPER_PY}" ]] || fail "${WRAPPER_PY} not found in repo root."
   [[ -f "./${WEBUI_PY}" ]] || fail "${WEBUI_PY} not found in repo root."
+  [[ -f "./${NODE_STORE_PY}" ]] || fail "${NODE_STORE_PY} not found in repo root."
   [[ -f "./templates/index.html" ]] || fail "templates/index.html not found."
   [[ -f "./static/app.js" ]] || fail "static/app.js not found."
 }
@@ -220,7 +223,7 @@ copy_repo_files() {
 }
 
 patch_python_files() {
-  info "Applying TAK settings to source files..."
+  info "Applying runtime settings to source files..."
 
   for f in "${INSTALL_DIR}/${MESHTAK_IP_FILE}" "${INSTALL_DIR}/${MESHTAK_SERIAL_FILE}"; do
     [[ -f "${f}" ]] || continue
@@ -228,6 +231,11 @@ patch_python_files() {
     sed -i -E "s|^TAK_PORT *= *[0-9]+|TAK_PORT = ${TAK_PORT}|" "${f}"
     sed -i -E "s|^LOG_FILE_PATH *= *['\"].*['\"]|LOG_FILE_PATH = \"${LOG_FILE}\"|" "${f}"
   done
+
+  if [[ -f "${INSTALL_DIR}/${NODE_STORE_PY}" ]]; then
+    sed -i -E "s|^STORE_FILE *= *['\"].*['\"]|STORE_FILE = \"${NODE_STORE_FILE}\"|" \
+      "${INSTALL_DIR}/${NODE_STORE_PY}"
+  fi
 
   if [[ "${CONNECTION_MODE}" == "serial" ]]; then
     cp -f "${INSTALL_DIR}/${MESHTAK_SERIAL_FILE}" "${INSTALL_DIR}/${ACTIVE_PY}"
@@ -263,6 +271,12 @@ ensure_runtime_permissions() {
   mkdir -p "$(dirname "${LOG_FILE}")"
   touch "${LOG_FILE}"
   chmod 664 "${LOG_FILE}" || true
+
+  mkdir -p "${INSTALL_DIR}"
+  if [[ ! -f "${NODE_STORE_FILE}" ]]; then
+    echo "{}" > "${NODE_STORE_FILE}"
+  fi
+  chmod 664 "${NODE_STORE_FILE}" || true
 
   if id tdcadmin >/dev/null 2>&1; then
     if getent group dialout >/dev/null 2>&1; then
@@ -304,6 +318,10 @@ EOF
 }
 
 show_status() {
+  local host_ip
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  host_ip="${host_ip:-localhost}"
+
   echo
   bold "MeshTAK install complete"
   echo "Mode:            ${CONNECTION_MODE}"
@@ -315,7 +333,8 @@ show_status() {
   echo "TAK target:      ${TAK_HOST}:${TAK_PORT}"
   echo "Active script:   ${INSTALL_DIR}/${ACTIVE_PY}"
   echo "Wrapper:         ${INSTALL_DIR}/${WRAPPER_PY}"
-  echo "Web UI:          http://$(hostname -I 2>/dev/null | awk '{print $1}'):8420"
+  echo "Node store:      ${NODE_STORE_FILE}"
+  echo "Web UI:          http://${host_ip}:8420"
   echo "Python venv:     ${VENV_DIR}"
   echo "Install log:     ${INSTALL_LOG}"
   echo "Runtime log:     ${LOG_FILE}"
@@ -324,6 +343,7 @@ show_status() {
   echo "  systemctl status meshtak --no-pager"
   echo "  journalctl -u meshtak -f"
   echo "  tail -f ${LOG_FILE}"
+  echo "  cat ${NODE_STORE_FILE}"
   echo
   systemctl status meshtak --no-pager || true
 }

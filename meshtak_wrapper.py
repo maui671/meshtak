@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 import os
+import signal
+import subprocess
 import sys
 import time
-import threading
-import subprocess
-import signal
 
 BRIDGE_SCRIPT = "/opt/meshtak/meshtak.py"
 WEBUI_SCRIPT = "/opt/meshtak/webui.py"
@@ -21,12 +20,17 @@ def start_process(cmd):
 def stop_process(proc):
     if not proc:
         return
+
+    if proc.poll() is not None:
+        return
+
     try:
         proc.terminate()
         proc.wait(timeout=10)
     except Exception:
         try:
             proc.kill()
+            proc.wait(timeout=5)
         except Exception:
             pass
 
@@ -39,17 +43,23 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
+def validate_files():
+    missing = []
+    for path in (BRIDGE_SCRIPT, WEBUI_SCRIPT):
+        if not os.path.isfile(path):
+            missing.append(path)
+
+    if missing:
+        raise SystemExit("Missing required file(s): " + ", ".join(missing))
+
+
 def main():
     global bridge_proc, web_proc
 
+    validate_files()
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-
-    if not os.path.isfile(BRIDGE_SCRIPT):
-        raise SystemExit(f"Bridge script not found: {BRIDGE_SCRIPT}")
-
-    if not os.path.isfile(WEBUI_SCRIPT):
-        raise SystemExit(f"Web UI script not found: {WEBUI_SCRIPT}")
 
     bridge_proc = start_process([sys.executable, BRIDGE_SCRIPT])
     web_proc = start_process([sys.executable, WEBUI_SCRIPT])

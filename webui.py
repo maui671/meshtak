@@ -11,7 +11,7 @@ from node_store import get_nodes
 app = Flask(
     __name__,
     template_folder="/opt/meshtak/templates",
-    static_folder="/opt/meshtak/static"
+    static_folder="/opt/meshtak/static",
 )
 
 LOG_FILE = "/var/log/meshtak.log"
@@ -36,7 +36,7 @@ def get_service_status():
             ["systemctl", "is-active", SERVICE_NAME],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
         )
         return result.stdout.strip() or "unknown"
     except Exception:
@@ -53,10 +53,8 @@ def api_status():
     lines = read_recent_lines(LOG_FILE)
 
     nodes_dict = get_nodes()
-    nodes = sorted(
-        nodes_dict.values(),
-        key=lambda x: x.get("callsign", x.get("node_id", ""))
-    )
+    nodes = list(nodes_dict.values())
+    nodes = sorted(nodes, key=lambda x: x.get("callsign", x.get("node_id", "")))
 
     tak_lines = [line for line in lines if "TAK <- " in line][-50:]
     error_lines = [line for line in lines if "ERROR" in line or "WARNING" in line][-50:]
@@ -69,7 +67,7 @@ def api_status():
         "recent_tak": tak_lines[::-1],
         "recent_errors": error_lines[::-1],
         "recent_log": lines[-100:][::-1],
-        "timestamp": time.time()
+        "timestamp": time.time(),
     })
 
 
