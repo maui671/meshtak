@@ -1,12 +1,22 @@
 let map;
 let markersLayer;
+let hasAutoFit = false;
+let userAdjustedMap = false;
+let lastMarkerSignature = "";
 
 function ensureMap() {
   if (map) {
     return;
   }
 
-  map = L.map("map").setView([32.5, -83.6], 7);
+  map = L.map("map", {
+    zoomControl: true,
+    scrollWheelZoom: true,
+    doubleClickZoom: true,
+    boxZoom: true,
+    keyboard: true,
+    dragging: true
+  }).setView([32.5, -83.6], 7);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
@@ -14,6 +24,13 @@ function ensureMap() {
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
+
+  const markUserAdjusted = () => {
+    userAdjustedMap = true;
+  };
+
+  map.on("zoomstart", markUserAdjusted);
+  map.on("dragstart", markUserAdjusted);
 }
 
 function isValidCoord(lat, lon) {
@@ -31,6 +48,29 @@ function isValidCoord(lat, lon) {
   );
 }
 
+function buildMarkerSignature(nodes) {
+  return (nodes || [])
+    .filter((node) => isValidCoord(node.lat, node.lon))
+    .map((node) => {
+      const lat = Number(node.lat).toFixed(6);
+      const lon = Number(node.lon).toFixed(6);
+      const id = node.node_id || "";
+      const seen = node.last_seen || "";
+      return `${id}:${lat}:${lon}:${seen}`;
+    })
+    .sort()
+    .join("|");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function refreshMap(nodes) {
   ensureMap();
   markersLayer.clearLayers();
@@ -44,6 +84,7 @@ function refreshMap(nodes) {
   }
 
   const bounds = [];
+  const markerSignature = buildMarkerSignature(validNodes);
 
   for (const node of validNodes) {
     const lat = Number(node.lat);
@@ -58,28 +99,41 @@ function refreshMap(nodes) {
 
     const marker = L.marker([lat, lon]);
     marker.bindPopup(`
-      <b>${callsign}</b><br>
-      Node ID: ${nodeId}<br>
+      <b>${escapeHtml(callsign)}</b><br>
+      Node ID: ${escapeHtml(nodeId)}<br>
       Lat/Lon: ${lat}, ${lon}<br>
-      HAE: ${hae}<br>
-      Source: ${source}<br>
-      Last Seen: ${lastSeen}
+      HAE: ${escapeHtml(hae)}<br>
+      Source: ${escapeHtml(source)}<br>
+      Last Seen: ${escapeHtml(lastSeen)}
     `);
 
     marker.addTo(markersLayer);
     bounds.push([lat, lon]);
   }
 
-  if (bounds.length === 1) {
-    map.setView(bounds[0], 13);
-  } else {
-    map.fitBounds(bounds, { padding: [30, 30] });
+  const markersChanged = markerSignature !== lastMarkerSignature;
+  lastMarkerSignature = markerSignature;
+
+  if (!hasAutoFit || (!userAdjustedMap && markersChanged)) {
+    if (bounds.length === 1) {
+      map.setView(bounds[0], 13);
+    } else {
+      map.fitBounds(bounds, { padding: [30, 30] });
+    }
+    hasAutoFit = true;
   }
 }
 
 async function refreshStatus() {
   try {
-    const res = await fetch("/api/status");
+    const res = await fetch("/api/status", {
+      cache: "no-store"
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
     const data = await res.json();
 
     const service = (data.service || "unknown").toLowerCase();
@@ -127,14 +181,14 @@ async function refreshStatus() {
 
         const row = document.createElement("tr");
         row.innerHTML = `
-          <td>${node.callsign || ""}</td>
-          <td>${node.node_id || ""}</td>
-          <td>${node.lat ?? ""}</td>
-          <td>${node.lon ?? ""}</td>
-          <td>${node.hae ?? ""}</td>
-          <td>${node.source || ""}</td>
-          <td>${lastSeen}</td>
-          <td>${node.uid || ""}</td>
+          <td>${escapeHtml(node.callsign || "")}</td>
+          <td>${escapeHtml(node.node_id || "")}</td>
+          <td>${escapeHtml(node.lat ?? "")}</td>
+          <td>${escapeHtml(node.lon ?? "")}</td>
+          <td>${escapeHtml(node.hae ?? "")}</td>
+          <td>${escapeHtml(node.source || "")}</td>
+          <td>${escapeHtml(lastSeen)}</td>
+          <td>${escapeHtml(node.uid || "")}</td>
         `;
         tbody.appendChild(row);
       }

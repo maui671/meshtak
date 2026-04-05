@@ -3,17 +3,23 @@ import logging
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
+from meshtastic.tcp_interface import TCPInterface
 
-from node_store import update_node
+from node_store import dequeue_messages, update_node
 
 # ================= CONFIG =================
+CONNECTION_MODE = "serial"  # "serial" or "ip"
+
 MESHTASTIC_DEVICE = "/dev/ttyS0"
+MESHTASTIC_HOST = "10.42.0.50"
+MESHTASTIC_PORT = 4403
 
 TAK_HOST = "127.0.0.1"
 TAK_PORT = 8088
@@ -30,7 +36,7 @@ TAK_OS = "Linux"
 TAK_VERSION = "4.10.3"
 
 SEND_INTERVAL_SECONDS = 2
-
+QUEUE_POLL_SECONDS = 2
 LOG_FILE_PATH = "/var/log/meshtak.log"
 # ==========================================
 
@@ -38,6 +44,9 @@ tak_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 tak_addr = (TAK_HOST, TAK_PORT)
 
 iface = None
+iface_lock = threading.Lock()
+stop_event = threading.Event()
+
 node_callsigns = {}
 node_cache = {}
 last_sent = {}
@@ -66,15 +75,18 @@ def make_callsign(long_name: str, short_name: str, node_id: str) -> str:
         compact = re.sub(r"\s+", " ", long_name).strip()
         if compact:
             return compact
-    return node_id.lstrip("!")
+    return str(node_id).lstrip("!")
 
 
 def refresh_node_cache():
     global node_cache
 
     try:
-        if iface and getattr(iface, "nodes", None):
-            node_cache = dict(iface.nodes)
+        with iface_lock:
+            current_iface = iface
+
+        if current_iface and getattr(current_iface, "nodes", None):
+            node_cache = dict(current_iface.nodes)
 
             for node_id, node in node_cache.items():
                 user = node.get("user", {})
@@ -234,29 +246,6 @@ def on_receive(packet, interface):
         logging.error(f"Error processing packet: {exc}")
 
 
-def connect_to_meshtastic():
-    max_retries = 5
-    retries = 0
-
-    while retries < max_retries:
-        try:
-            logging.info(f"Connecting to Meshtastic serial device {MESHTASTIC_DEVICE} ...")
-            connected = SerialInterface(devPath=MESHTASTIC_DEVICE)
-            logging.info("Successfully connected to Meshtastic over serial!")
-            return connected
-        except Exception as exc:
-            retries += 1
-            wait_time = 5 * retries
-            logging.warning(
-                f"Error connecting to Meshtastic serial device: {exc}. "
-                f"Retrying in {wait_time} seconds..."
-            )
-            time.sleep(wait_time)
-
-    logging.error("Failed to connect to Meshtastic after several attempts.")
-    return None
-
-
 def setup_logging():
     os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
     logging.basicConfig(
@@ -267,23 +256,167 @@ def setup_logging():
     logging.info("Logging started")
 
 
+def connect_to_meshtastic():
+    max_retries = 5
+    retries = 0
+
+    while retries < max_retries and not stop_event.is_set():
+        try:
+            if CONNECTION_MODE == "serial":
+                logging.info(f"Connecting to Meshtastic serial device {MESHTASTIC_DEVICE} ...")
+                connected = SerialInterface(devPath=MESHTASTIC_DEVICE)
+                logging.info("Successfully connected to Meshtastic over serial!")
+            else:
+                logging.info(f"Connecting to Meshtastic TCP node {MESHTASTIC_HOST}:{MESHTASTIC_PORT} ...")
+                connected = TCPInterface(MESHTASTIC_HOST, MESHTASTIC_PORT)
+                logging.info("Successfully connected to Meshtastic over TCP!")
+
+            return connected
+        except Exception as exc:
+            retries += 1
+            wait_time = 5 * retries
+            logging.warning(
+                f"Error connecting to Meshtastic ({CONNECTION_MODE}): {exc}. "
+                f"Retrying in {wait_time} seconds..."
+            )
+            time.sleep(wait_time)
+
+    logging.error("Failed to connect to Meshtastic after several attempts.")
+    return None
+
+
+def close_interface():
+    global iface
+
+    with iface_lock:
+        current_iface = iface
+        iface = None
+
+    if not current_iface:
+        return
+
+    try:
+        current_iface.close()
+    except Exception:
+        pass
+
+
+def normalize_destination(destination):
+    destination = str(destination or "").strip()
+    if not destination or destination.lower() == "broadcast":
+        return None
+
+    if destination.startswith("!"):
+        return destination
+
+    return destination
+
+
+def send_outbound_message(item):
+    with iface_lock:
+        current_iface = iface
+
+    if not current_iface:
+        raise RuntimeError("Meshtastic interface is not connected")
+
+    text = str(item.get("text") or "").strip()
+    destination = normalize_destination(item.get("destination"))
+    channel = int(item.get("channel", 0))
+    want_ack = bool(item.get("want_ack", False))
+
+    if not text:
+        raise ValueError("Queued message text is empty")
+
+    send_kwargs = {
+        "text": text,
+        "wantAck": want_ack,
+        "channelIndex": channel,
+    }
+
+    if destination:
+        send_kwargs["destinationId"] = destination
+
+    try:
+        current_iface.sendText(**send_kwargs)
+    except TypeError:
+        # compatibility fallback for differing meshtastic python signatures
+        if destination:
+            current_iface.sendText(
+                text,
+                destinationId=destination,
+                wantAck=want_ack,
+                channelIndex=channel,
+            )
+        else:
+            current_iface.sendText(
+                text,
+                wantAck=want_ack,
+                channelIndex=channel,
+            )
+
+    logging.info(
+        f"MSG -> destination={destination or 'broadcast'} channel={channel} "
+        f"want_ack={want_ack} text={text}"
+    )
+
+
+def outbound_queue_worker():
+    while not stop_event.is_set():
+        try:
+            items = dequeue_messages(limit=10)
+            if not items:
+                time.sleep(QUEUE_POLL_SECONDS)
+                continue
+
+            for item in items:
+                try:
+                    send_outbound_message(item)
+                except Exception as exc:
+                    logging.error(
+                        f"Failed to send queued message id={item.get('id')} "
+                        f"destination={item.get('destination')} error={exc}"
+                    )
+        except Exception as exc:
+            logging.error(f"Queue worker error: {exc}")
+
+        time.sleep(QUEUE_POLL_SECONDS)
+
+
 def main():
     global iface
 
     setup_logging()
-    logging.info("Starting MeshTAK Gateway (serial mode)...")
+    logging.info(f"Starting MeshTAK Gateway ({CONNECTION_MODE} mode)...")
 
-    iface = connect_to_meshtastic()
-    if not iface:
-        logging.error("Exiting... Could not establish connection.")
-        raise SystemExit(1)
-
-    refresh_node_cache()
     pub.subscribe(on_receive, "meshtastic.receive")
-    logging.info("Mesh -> TAK gateway running (event-driven)")
 
-    while True:
-        time.sleep(1)
+    queue_thread = threading.Thread(target=outbound_queue_worker, daemon=True)
+    queue_thread.start()
+
+    while not stop_event.is_set():
+        connected = connect_to_meshtastic()
+        if not connected:
+            logging.error("Exiting... Could not establish connection.")
+            raise SystemExit(1)
+
+        with iface_lock:
+            iface = connected
+
+        try:
+            refresh_node_cache()
+            logging.info("Mesh -> TAK gateway running (event-driven)")
+            while not stop_event.is_set():
+                time.sleep(1)
+        except KeyboardInterrupt:
+            stop_event.set()
+        except Exception as exc:
+            logging.error(f"Runtime loop error: {exc}")
+        finally:
+            close_interface()
+
+        if not stop_event.is_set():
+            logging.warning("Meshtastic connection dropped, reconnecting in 5 seconds...")
+            time.sleep(5)
 
 
 if __name__ == "__main__":

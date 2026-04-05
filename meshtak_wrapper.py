@@ -5,78 +5,65 @@ import subprocess
 import sys
 import time
 
-BRIDGE_SCRIPT = "/opt/meshtak/meshtak.py"
-WEBUI_SCRIPT = "/opt/meshtak/webui.py"
+APP_DIR = "/opt/meshtak"
+VENV_BIN = f"{APP_DIR}/venv/bin"
 
-bridge_proc = None
-web_proc = None
-stop_requested = False
+MESHTAK_CMD = [f"{VENV_BIN}/python", f"{APP_DIR}/meshtak.py"]
+WEBUI_CMD   = [f"{VENV_BIN}/python", f"{APP_DIR}/webui.py"]
 
-
-def start_process(cmd):
-    return subprocess.Popen(cmd)
+processes = []
 
 
-def stop_process(proc):
-    if not proc:
-        return
+def start_process(cmd, name):
+    print(f"[WRAPPER] Starting {name}: {' '.join(cmd)}", flush=True)
+    proc = subprocess.Popen(cmd)
+    processes.append((name, proc))
+    return proc
 
-    if proc.poll() is not None:
-        return
 
-    try:
-        proc.terminate()
-        proc.wait(timeout=10)
-    except Exception:
-        try:
+def stop_all():
+    print("[WRAPPER] Stopping all processes...", flush=True)
+
+    for name, proc in processes:
+        if proc.poll() is None:
+            print(f"[WRAPPER] Terminating {name}", flush=True)
+            proc.terminate()
+
+    # give them a moment
+    time.sleep(3)
+
+    for name, proc in processes:
+        if proc.poll() is None:
+            print(f"[WRAPPER] Killing {name}", flush=True)
             proc.kill()
-            proc.wait(timeout=5)
-        except Exception:
-            pass
 
 
-def signal_handler(signum, frame):
-    global stop_requested
-    stop_requested = True
-    stop_process(bridge_proc)
-    stop_process(web_proc)
+def signal_handler(sig, frame):
+    print(f"[WRAPPER] Received signal {sig}", flush=True)
+    stop_all()
     sys.exit(0)
 
 
-def validate_files():
-    missing = []
-    for path in (BRIDGE_SCRIPT, WEBUI_SCRIPT):
-        if not os.path.isfile(path):
-            missing.append(path)
-
-    if missing:
-        raise SystemExit("Missing required file(s): " + ", ".join(missing))
-
-
 def main():
-    global bridge_proc, web_proc
-
-    validate_files()
-
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    bridge_proc = start_process([sys.executable, BRIDGE_SCRIPT])
-    web_proc = start_process([sys.executable, WEBUI_SCRIPT])
+    # ensure working dir
+    os.chdir(APP_DIR)
 
-    while not stop_requested:
-        bridge_rc = bridge_proc.poll()
-        web_rc = web_proc.poll()
+    # start both components
+    meshtak_proc = start_process(MESHTAK_CMD, "meshtak")
+    webui_proc   = start_process(WEBUI_CMD, "webui")
 
-        if bridge_rc is not None:
-            stop_process(web_proc)
-            raise SystemExit(f"Bridge process exited with code {bridge_rc}")
-
-        if web_rc is not None:
-            stop_process(bridge_proc)
-            raise SystemExit(f"Web UI process exited with code {web_rc}")
-
+    # monitor loop
+    while True:
         time.sleep(2)
+
+        for name, proc in processes:
+            if proc.poll() is not None:
+                print(f"[WRAPPER] {name} exited with code {proc.returncode}", flush=True)
+                stop_all()
+                sys.exit(1)
 
 
 if __name__ == "__main__":

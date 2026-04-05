@@ -2,151 +2,84 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>MeshTAK</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
+  <title>MeshTAK</title>
+  <link rel="stylesheet" href="/static/styles.css">
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-sA+4w39rHkG1LkG8GkVU1urx8Wc58K8p2wYf5pQtQ0M="
     crossorigin=""
-  />
-
-  <style>
-    body {
-      background: #0f172a;
-      color: #e2e8f0;
-      font-family: Arial, Helvetica, sans-serif;
-      margin: 0;
-      padding: 0;
-    }
-
-    .wrap {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 20px;
-    }
-
-    .title {
-      font-size: 28px;
-      font-weight: 700;
-      margin-bottom: 6px;
-    }
-
-    .subtitle {
-      color: #94a3b8;
-      margin-bottom: 24px;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 16px;
-    }
-
-    .card {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 14px;
-      padding: 16px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
-    }
-
-    .card h2 {
-      margin-top: 0;
-      font-size: 18px;
-    }
-
-    .pill {
-      display: inline-block;
-      padding: 6px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 700;
-      margin-right: 8px;
-    }
-
-    .active { background: #14532d; color: #dcfce7; }
-    .inactive { background: #7f1d1d; color: #fee2e2; }
-    .unknown { background: #3f3f46; color: #f4f4f5; }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-
-    th, td {
-      text-align: left;
-      padding: 8px;
-      border-bottom: 1px solid #1f2937;
-      vertical-align: top;
-    }
-
-    pre {
-      background: #020617;
-      color: #cbd5e1;
-      padding: 12px;
-      border-radius: 10px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      max-height: 360px;
-      overflow-y: auto;
-      font-size: 12px;
-    }
-
-    .small {
-      font-size: 12px;
-      color: #94a3b8;
-    }
-
-    .muted {
-      color: #94a3b8;
-    }
-
-    #map {
-      width: 100%;
-      height: 520px;
-      border-radius: 12px;
-      overflow: hidden;
-      border: 1px solid #1f2937;
-    }
-  </style>
+  >
 </head>
 <body>
-  <div class="wrap">
-    <div class="title">MeshTAK</div>
-    <div class="subtitle">Meshtastic to TAK bridge with local HTTPS status UI</div>
-
-    <div class="grid">
-      <div class="card">
-        <h2>Service Status</h2>
-        <div id="serviceStatus">Loading...</div>
-        <div class="small" id="nodeCount"></div>
-        <div class="small" id="logPath"></div>
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <h1>MeshTAK</h1>
+        <p class="subtitle">Meshtastic to TAK bridge with live HTTPS status UI</p>
       </div>
-
-      <div class="card">
-        <h2>Recent TAK Pushes</h2>
-        <pre id="recentTak">Loading...</pre>
+      <div class="status-block">
+        <div id="serviceStatus" class="status-value">LOADING</div>
+        <div id="nodeCount" class="muted">Tracked nodes: 0</div>
       </div>
+    </header>
 
-      <div class="card">
-        <h2>Recent Errors</h2>
-        <pre id="recentErrors">Loading...</pre>
-      </div>
-
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>Map</h2>
-        <div id="map"></div>
-        <div class="small" style="margin-top: 10px;">
-          If the basemap does not load, the node markers will still plot once coordinates are available.
+    <main class="grid">
+      <section class="card card-map">
+        <div class="card-header">
+          <h2>Live Map</h2>
         </div>
-      </div>
+        <div id="map"></div>
+      </section>
 
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>Nodes</h2>
-        <div style="overflow-x:auto;">
+      <section class="card card-send">
+        <div class="card-header">
+          <h2>Send Meshtastic Message</h2>
+        </div>
+
+        <form id="sendMessageForm" class="form-stack">
+          <label>
+            <span>Message</span>
+            <textarea id="messageText" rows="4" maxlength="400" placeholder="Enter Meshtastic message text" required></textarea>
+          </label>
+
+          <div class="form-row">
+            <label>
+              <span>Destination</span>
+              <input id="messageDestination" type="text" value="broadcast" placeholder="broadcast or !nodeid">
+            </label>
+
+            <label>
+              <span>Channel</span>
+              <input id="messageChannel" type="number" min="0" step="1" value="0">
+            </label>
+          </div>
+
+          <div class="form-row">
+            <label>
+              <span>Sender Label</span>
+              <input id="messageSender" type="text" value="webui" maxlength="32">
+            </label>
+
+            <label class="checkbox-row">
+              <span>Want ACK</span>
+              <input id="messageWantAck" type="checkbox">
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button type="submit">Queue Message</button>
+            <div id="sendMessageResult" class="muted"></div>
+          </div>
+        </form>
+      </section>
+
+      <section class="card card-nodes">
+        <div class="card-header">
+          <h2>Observed Nodes</h2>
+        </div>
+        <div class="table-wrap">
           <table>
             <thead>
               <tr>
@@ -161,23 +94,124 @@
               </tr>
             </thead>
             <tbody id="nodesTable">
-              <tr><td colspan="8" class="muted">Loading...</td></tr>
+              <tr>
+                <td colspan="8">Loading nodes...</td>
+              </tr>
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>Recent Log</h2>
+      <section class="card">
+        <div class="card-header">
+          <h2>Queued / Recent Messages</h2>
+        </div>
+        <pre id="queuedMessages">Loading...</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Recent TAK Activity</h2>
+        </div>
+        <pre id="recentTak">Loading...</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Recent Errors</h2>
+        </div>
+        <pre id="recentErrors">Loading...</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Recent Log</h2>
+        </div>
+        <div class="meta-line" id="logPath">Log file:</div>
         <pre id="recentLog">Loading...</pre>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
 
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-o9N1j7kGEXG2c8p2F4A0uH0zjLxyzKDn5XxhxL7sRKQ="
     crossorigin=""
   ></script>
   <script src="/static/app.js"></script>
+  <script>
+    async function sendMessage(event) {
+      event.preventDefault();
+
+      const result = document.getElementById("sendMessageResult");
+      result.textContent = "Queueing...";
+
+      const payload = {
+        text: document.getElementById("messageText").value.trim(),
+        destination: document.getElementById("messageDestination").value.trim() || "broadcast",
+        channel: Number(document.getElementById("messageChannel").value || 0),
+        sender: document.getElementById("messageSender").value.trim() || "webui",
+        want_ack: document.getElementById("messageWantAck").checked
+      };
+
+      try {
+        const res = await fetch("/api/send-message", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        result.textContent = "Queued successfully.";
+        document.getElementById("messageText").value = "";
+        if (typeof refreshStatus === "function") {
+          await refreshStatus();
+        }
+      } catch (err) {
+        result.textContent = `Error: ${err}`;
+      }
+    }
+
+    document.getElementById("sendMessageForm").addEventListener("submit", sendMessage);
+
+    const originalRefreshStatus = refreshStatus;
+    refreshStatus = async function () {
+      await originalRefreshStatus();
+
+      try {
+        const res = await fetch("/api/messages", { cache: "no-store" });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const messages = Array.isArray(data.messages) ? data.messages : [];
+
+        document.getElementById("queuedMessages").textContent =
+          messages.length
+            ? messages.map((msg) => {
+                const ts = msg.created_at
+                  ? new Date(msg.created_at * 1000).toLocaleString()
+                  : "";
+                return [
+                  `[${msg.status || "unknown"}] ${ts}`,
+                  `destination=${msg.destination || "broadcast"} channel=${msg.channel ?? 0} want_ack=${msg.want_ack ? "true" : "false"}`,
+                  `sender=${msg.sender || ""}`,
+                  `${msg.text || ""}`
+                ].join("\n");
+              }).join("\n\n")
+            : "No queued or recent messages.";
+      } catch (err) {
+        document.getElementById("queuedMessages").textContent = `Error: ${err}`;
+      }
+    };
+  </script>
 </body>
 </html>
