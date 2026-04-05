@@ -6,10 +6,11 @@ import socket
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from node_store import update_node
 
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
+
+from node_store import update_node
 
 # ================= CONFIG =================
 MESHTASTIC_DEVICE = "/dev/ttyS0"
@@ -77,11 +78,16 @@ def refresh_node_cache():
 
             for node_id, node in node_cache.items():
                 user = node.get("user", {})
-                node_callsigns[node_id] = make_callsign(
+                callsign = make_callsign(
                     user.get("longName", ""),
                     user.get("shortName", ""),
                     node_id,
                 )
+                node_callsigns[node_id] = callsign
+                update_node(node_id, {
+                    "node_id": node_id,
+                    "callsign": callsign
+                })
     except Exception as exc:
         logging.warning(f"Failed to refresh node cache: {exc}")
 
@@ -99,7 +105,6 @@ def get_callsign(node_id: str) -> str:
         node_id,
     )
     node_callsigns[node_id] = callsign
-    update_node(node_id, {"callsign": callsign})
     return callsign
 
 
@@ -176,6 +181,7 @@ def handle_position(node_id: str, pos: dict, source: str):
     hae = get_hae(pos)
 
     update_node(node_id, {
+        "node_id": node_id,
         "callsign": callsign,
         "lat": lat,
         "lon": lon,
@@ -212,6 +218,10 @@ def on_receive(packet, interface):
                 node_id,
             )
             node_callsigns[node_id] = callsign
+            update_node(node_id, {
+                "node_id": node_id,
+                "callsign": callsign
+            })
             logging.info(f"NAME <- {callsign} [{node_id}] port={port}")
             return
 
