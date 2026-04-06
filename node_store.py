@@ -161,11 +161,24 @@ class NodeStore:
         if not node_id:
             return ""
 
-        if node_id.lower() in {"broadcast", "all", "*"}:
+        # BROADCAST HANDLING (FIX)
+        if node_id.lower() in {
+            "broadcast",
+            "all",
+            "*",
+            "none",
+            "null",
+            "undefined",
+            "any",
+            "everyone",
+        }:
             return ""
 
         if node_id.startswith("!"):
             node_id = node_id[1:].strip()
+
+        if not node_id:
+            return ""
 
         if node_id.lower().startswith("0x"):
             try:
