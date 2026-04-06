@@ -9,6 +9,7 @@ import ssl
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from html import escape
 from typing import Any, Dict, Optional
 
 from meshtastic.serial_interface import SerialInterface
@@ -71,6 +72,9 @@ class MeshTAK:
         self.running = True
         self.connected = False
 
+        self.radio_lock = threading.RLock()
+        self.tx_priority_until = 0.0
+
         self._tak_thread: Optional[threading.Thread] = None
         self._tak_sync_thread: Optional[threading.Thread] = None
         self._tx_thread: Optional[threading.Thread] = None
@@ -107,25 +111,177 @@ class MeshTAK:
             cot_cfg.get("type", "a-f-G-U-C"),
         )
 
+    def _normalize_node_id(self, value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+
+        if isinstance(value, int):
+            return f"!{value & 0xFFFFFFFF:08x}"
+
+        node_id = str(value).strip()
+        if not node_id:
+            return None
+
+        if node_id.lower() in {"broadcast", "all", "*"}:
+            return None
+
+        if node_id.startswith("!"):
+            node_id = node_id[1:].strip()
+
+        if node_id.lower().startswith("0x"):
+            try:
+                return f"!{int(node_id, 16) & 0xFFFFFFFF:08x}"
+            except Exception:
+                pass
+
+        if re.fullmatch(r"[0-9a-fA-F]{8}", node_id):
+            return f"!{node_id.lower()}"
+
+        if re.fullmatch(r"\d+", node_id):
+            try:
+                return f"!{int(node_id, 10) & 0xFFFFFFFF:08x}"
+            except Exception:
+                pass
+
+        cleaned = re.sub(r"[^0-9a-zA-Z]+", "", node_id).lower()
+        if re.fullmatch(r"[0-9a-f]{8}", cleaned):
+            return f"!{cleaned}"
+
+        return f"!{node_id.lower()}"
+
+    def _radio_maintenance_paused(self) -> bool:
+        return time.time() < self.tx_priority_until
+
+    def _pause_radio_maintenance(self, seconds: float = 3.0) -> None:
+        self.tx_priority_until = max(self.tx_priority_until, time.time() + seconds)
+
+    def _lookup_user_from_interface(self, node_id: Optional[Any]) -> Dict[str, Any]:
+        normalized = self._normalize_node_id(node_id)
+        if not normalized or not self.interface:
+            return {}
+
+        if self._radio_maintenance_paused():
+            return {}
+
+        acquired = self.radio_lock.acquire(timeout=0.25)
+        if not acquired:
+            return {}
+
+        try:
+            nodes = getattr(self.interface, "nodes", {}) or {}
+
+            for key, value in nodes.items():
+                key_norm = self._normalize_node_id(key)
+                if key_norm == normalized and isinstance(value, dict):
+                    user = value.get("user") or {}
+                    if isinstance(user, dict):
+                        return user
+
+            for value in nodes.values():
+                if not isinstance(value, dict):
+                    continue
+
+                user = value.get("user") or {}
+                if not isinstance(user, dict):
+                    user = {}
+
+                candidates = [
+                    value.get("num"),
+                    value.get("id"),
+                    value.get("nodeId"),
+                    value.get("fromId"),
+                    user.get("id"),
+                ]
+
+                for candidate in candidates:
+                    if self._normalize_node_id(candidate) == normalized:
+                        return user
+        except Exception as exc:
+            log.debug("User lookup failed for %s: %s", normalized, exc)
+        finally:
+            self.radio_lock.release()
+
+        return {}
+
+    def _extract_user_from_packet(self, packet: Dict[str, Any], from_id: str) -> Dict[str, Any]:
+        decoded = packet.get("decoded", {}) or {}
+        user = decoded.get("user") or packet.get("user") or {}
+        if isinstance(user, dict) and user:
+            return user
+        return self._lookup_user_from_interface(from_id)
+
+    def _refresh_known_nodes(self) -> None:
+        if not self.interface:
+            return
+
+        if self._radio_maintenance_paused():
+            return
+
+        acquired = self.radio_lock.acquire(timeout=0.25)
+        if not acquired:
+            return
+
+        try:
+            nodes = getattr(self.interface, "nodes", {}) or {}
+            now = int(time.time())
+
+            for key, value in nodes.items():
+                if not isinstance(value, dict):
+                    continue
+
+                node_id = (
+                    value.get("id")
+                    or value.get("nodeId")
+                    or value.get("fromId")
+                    or value.get("num")
+                    or key
+                )
+                node_id_norm = self._normalize_node_id(node_id)
+                if not node_id_norm:
+                    continue
+
+                user = value.get("user") or {}
+                if not isinstance(user, dict):
+                    user = {}
+
+                position = value.get("position") or {}
+                if not isinstance(position, dict):
+                    position = {}
+
+                device_metrics = value.get("deviceMetrics", {})
+                if not isinstance(device_metrics, dict):
+                    device_metrics = {}
+
+                self.store.upsert_node(
+                    node_id_norm,
+                    long_name=user.get("longName"),
+                    short_name=user.get("shortName"),
+                    hw_model=user.get("hwModel"),
+                    role=user.get("role"),
+                    lat=position.get("latitude"),
+                    lon=position.get("longitude"),
+                    alt=position.get("altitude"),
+                    batt=device_metrics.get("batteryLevel"),
+                    last_heard=now,
+                    raw=value,
+                )
+        except Exception as exc:
+            log.debug("Known node refresh failed: %s", exc)
+        finally:
+            self.radio_lock.release()
+
     def get_callsign_for_node(self, node: Dict[str, Any]) -> str:
         short_name = str(node.get("short_name") or "").strip()
-        long_name = str(node.get("long_name") or "").strip()
         display_name = str(node.get("display_name") or "").strip()
+        long_name = str(node.get("long_name") or "").strip()
         node_id = str(node.get("node_id") or "").strip()
 
-        return short_name or long_name or display_name or node_id or "UNKNOWN"
+        return short_name or display_name or long_name or node_id or "UNKNOWN"
 
     def get_uid_for_node(self, node: Dict[str, Any]) -> str:
-        callsign = self.get_callsign_for_node(node)
-        node_id = str(node.get("node_id") or "").strip()
-
-        safe_callsign = re.sub(r"[^A-Za-z0-9_.-]+", "-", callsign).strip("-")
-        safe_callsign = safe_callsign or "node"
-
-        safe_node_id = re.sub(r"[^A-Za-z0-9_.!-]+", "-", node_id).strip("-")
-        safe_node_id = safe_node_id or "unknown"
-
-        return f"meshtak-{safe_callsign}-{safe_node_id}"
+        node_id = self._normalize_node_id(node.get("node_id")) or "!unknown000"
+        safe_node_id = node_id.lstrip("!")
+        return f"meshtak-node-{safe_node_id}"
 
     def is_connected(self) -> bool:
         return bool(self.connected and self.interface is not None)
@@ -150,10 +306,12 @@ class MeshTAK:
         pub.subscribe(self.on_receive, "meshtastic.receive")
         pub.subscribe(self.on_connection, "meshtastic.connection.established")
         self.connected = True
+        self._refresh_known_nodes()
 
     def on_connection(self, interface=None, topic=pub.AUTO_TOPIC) -> None:
         self.connected = True
         log.info("Meshtastic connection established")
+        self._refresh_known_nodes()
 
     def start(self) -> None:
         log.info("MeshTAK backend starting")
@@ -182,18 +340,6 @@ class MeshTAK:
             self._tx_thread = threading.Thread(target=self.tx_worker, daemon=True)
             self._tx_thread.start()
 
-    def _normalize_node_id(self, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        node_id = str(value).strip()
-        if not node_id:
-            return None
-        if node_id.lower() in {"broadcast", "all", "*"}:
-            return None
-        if not node_id.startswith("!"):
-            node_id = f"!{node_id}"
-        return node_id
-
     def _tak_enabled(self) -> bool:
         return bool(self.config.get("tak", {}).get("enabled", False))
 
@@ -212,14 +358,15 @@ class MeshTAK:
         try:
             decoded = packet.get("decoded", {}) or {}
             portnum = decoded.get("portnum")
-            from_id = str(packet.get("fromId") or packet.get("from") or "")
-            to_id = str(packet.get("toId") or packet.get("to") or "")
+            from_id = self._normalize_node_id(packet.get("fromId") or packet.get("from"))
+            to_id = self._normalize_node_id(packet.get("toId") or packet.get("to"))
             rx_time = int(time.time())
 
             if not from_id:
                 return
 
-            user = decoded.get("user") or packet.get("user") or {}
+            user = self._extract_user_from_packet(packet, from_id)
+
             if isinstance(user, dict) and user:
                 self.store.upsert_node(
                     from_id,
@@ -240,13 +387,25 @@ class MeshTAK:
                 if lat is not None and lon is not None:
                     node = self.store.upsert_node(
                         from_id,
+                        long_name=user.get("longName") if isinstance(user, dict) else None,
+                        short_name=user.get("shortName") if isinstance(user, dict) else None,
+                        hw_model=user.get("hwModel") if isinstance(user, dict) else None,
+                        role=user.get("role") if isinstance(user, dict) else None,
                         lat=lat,
                         lon=lon,
                         alt=alt,
                         last_heard=rx_time,
                         raw=packet,
                     )
-                    log.info("POS %s -> %s,%s alt=%s", from_id, lat, lon, alt)
+
+                    log.info(
+                        "POS %s (%s) -> %s,%s alt=%s",
+                        from_id,
+                        node.get("short_name") or node.get("long_name") or from_id,
+                        lat,
+                        lon,
+                        alt,
+                    )
 
                     if self._tak_enabled():
                         cot = self.build_cot(node)
@@ -268,6 +427,10 @@ class MeshTAK:
 
                 self.store.upsert_node(
                     from_id,
+                    long_name=user.get("longName") if isinstance(user, dict) else None,
+                    short_name=user.get("shortName") if isinstance(user, dict) else None,
+                    hw_model=user.get("hwModel") if isinstance(user, dict) else None,
+                    role=user.get("role") if isinstance(user, dict) else None,
                     last_heard=rx_time,
                     raw=packet,
                 )
@@ -282,6 +445,10 @@ class MeshTAK:
             else:
                 self.store.upsert_node(
                     from_id,
+                    long_name=user.get("longName") if isinstance(user, dict) else None,
+                    short_name=user.get("shortName") if isinstance(user, dict) else None,
+                    hw_model=user.get("hwModel") if isinstance(user, dict) else None,
+                    role=user.get("role") if isinstance(user, dict) else None,
                     last_heard=rx_time,
                     raw=packet,
                 )
@@ -301,16 +468,16 @@ class MeshTAK:
         lat = node.get("lat", 0)
         lon = node.get("lon", 0)
         alt = node.get("alt", 0)
-        callsign = self.get_callsign_for_node(node)
-        uid = self.get_uid_for_node(node)
+        callsign = escape(self.get_callsign_for_node(node), quote=True)
+        uid = escape(self.get_uid_for_node(node), quote=True)
 
         cot = (
-            f'<event version="2.0" uid="{uid}" type="{cot_cfg["type"]}" '
+            f'<event version="2.0" uid="{uid}" type="{escape(cot_cfg["type"], quote=True)}" '
             f'time="{time_str}" start="{time_str}" stale="{stale_str}" how="m-g">'
             f'<point lat="{lat}" lon="{lon}" hae="{alt}" ce="9999999.0" le="9999999.0"/>'
             f'<detail>'
             f'<contact callsign="{callsign}"/>'
-            f'<__group name="{cot_cfg["team"]}" role="{cot_cfg["role"]}"/>'
+            f'<__group name="{escape(cot_cfg["team"], quote=True)}" role="{escape(cot_cfg["role"], quote=True)}"/>'
             f'</detail>'
             f'</event>'
         )
@@ -318,15 +485,22 @@ class MeshTAK:
 
     def tak_sync_worker(self) -> None:
         last_sent: Dict[str, int] = {}
+
         while self.running:
             try:
                 if not self._tak_enabled():
                     time.sleep(5)
                     continue
 
+                if self._radio_maintenance_paused():
+                    time.sleep(0.5)
+                    continue
+
+                self._refresh_known_nodes()
+
                 now = int(time.time())
                 for node in self.store.get_nodes():
-                    node_id = str(node.get("node_id", "")).strip()
+                    node_id = self._normalize_node_id(node.get("node_id"))
                     lat = node.get("lat")
                     lon = node.get("lon")
                     if not node_id or lat is None or lon is None:
@@ -374,7 +548,6 @@ class MeshTAK:
                     sock.sendto(payload, (host, port))
                     sock.close()
                     log.info("TAK UDP SENT node=%s host=%s port=%s", item.get("node_id", ""), host, port)
-
                 else:
                     sock = socket.create_connection((host, port), timeout=5)
                     if use_tls:
@@ -382,8 +555,13 @@ class MeshTAK:
                         sock = context.wrap_socket(sock, server_hostname=host)
                     sock.sendall(payload)
                     sock.close()
-                    log.info("TAK TCP SENT node=%s host=%s port=%s tls=%s", item.get("node_id", ""), host, port, use_tls)
-
+                    log.info(
+                        "TAK TCP SENT node=%s host=%s port=%s tls=%s",
+                        item.get("node_id", ""),
+                        host,
+                        port,
+                        use_tls,
+                    )
             except Exception as exc:
                 log.error(
                     "TAK send failed protocol=%s host=%s port=%s error=%s",
@@ -396,8 +574,15 @@ class MeshTAK:
                 time.sleep(2)
 
     def queue_tx(self, text: str, to: Optional[str] = None) -> None:
+        try:
+            self.send_message(text=text, to=to)
+            log.info("TX sent immediately to=%s text=%s", to or "broadcast", text)
+            return
+        except Exception as exc:
+            log.warning("Immediate TX failed, queueing retry to=%s error=%s", to or "broadcast", exc)
+
         self.tx_queue.put({"text": text, "to": to})
-        log.info("TX queued locally to=%s text=%s", to or "broadcast", text)
+        log.info("TX queued for retry to=%s text=%s", to or "broadcast", text)
 
     def tx_worker(self) -> None:
         while self.running:
@@ -405,6 +590,8 @@ class MeshTAK:
                 msg = self.tx_queue.get(timeout=1)
             except queue.Empty:
                 continue
+
+            time.sleep(0.5)
 
             try:
                 self.send_message(msg.get("text", ""), msg.get("to"))
@@ -433,25 +620,28 @@ class MeshTAK:
 
         destination = self._normalize_node_id(to)
 
-        if destination:
-            log.info("TX attempt direct to=%s text=%s", destination, text)
-            sent_packet = self.interface.sendText(text, destinationId=destination)
-        else:
-            log.info("TX attempt broadcast text=%s", text)
-            sent_packet = self.interface.sendText(text)
+        with self.radio_lock:
+            self._pause_radio_maintenance(4.0)
 
-        self.store.add_message(
-            direction="tx",
-            text=text,
-            to_id=destination,
-            from_id="self",
-            from_name="MeshTAK",
-            to_name=destination or "Broadcast",
-            rx_timestamp=int(time.time()),
-            raw={"status": "sent", "packet": sent_packet},
-        )
+            if destination:
+                log.info("TX PRIORITY direct to=%s text=%s", destination, text)
+                sent_packet = self.interface.sendText(text, destinationId=destination)
+            else:
+                log.info("TX PRIORITY broadcast text=%s", text)
+                sent_packet = self.interface.sendText(text)
 
-        log.info("TX queued to radio to=%s text=%s", destination or "broadcast", text)
+            self.store.add_message(
+                direction="tx",
+                text=text,
+                to_id=destination,
+                from_id="self",
+                from_name="MeshTAK",
+                to_name=destination or "Broadcast",
+                rx_timestamp=int(time.time()),
+                raw={"status": "sent", "packet": sent_packet},
+            )
+
+            log.info("TX sent to radio to=%s text=%s", destination or "broadcast", text)
 
 
 if __name__ == "__main__":
