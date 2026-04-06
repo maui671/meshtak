@@ -12,6 +12,11 @@
       nodes: null,
       messages: null,
       map: null,
+      targets: null,
+    },
+    targets: {
+      channels: [],
+      nodes: [],
     },
   };
 
@@ -25,6 +30,10 @@
     statsMessages: document.getElementById("stats-messages"),
     statsQueue: document.getElementById("stats-queue"),
 
+    settingsToggle: document.getElementById("settings-toggle"),
+    settingsClose: document.getElementById("settings-close"),
+    settingsDrawer: document.getElementById("settings-drawer"),
+
     configForm: document.getElementById("config-form"),
     configConnectionType: document.getElementById("config-connection-type"),
     configSerialRow: document.getElementById("config-serial-row"),
@@ -34,16 +43,30 @@
     configTakEnabled: document.getElementById("config-tak-enabled"),
     configTakHost: document.getElementById("config-tak-host"),
     configTakPort: document.getElementById("config-tak-port"),
+    configTakProtocol: document.getElementById("config-tak-protocol"),
     configTakTls: document.getElementById("config-tak-tls"),
+    configTakVerifyServer: document.getElementById("config-tak-verify-server"),
+    takSettingsBlock: document.getElementById("tak-settings-block"),
+    takTcpOptions: document.getElementById("tak-tcp-options"),
+    takTlsOptions: document.getElementById("tak-tls-options"),
     configSaveBtn: document.getElementById("config-save-btn"),
     configResetBtn: document.getElementById("config-reset-btn"),
     configStatus: document.getElementById("config-status"),
 
+    takCaCertStatus: document.getElementById("tak-ca-cert-status"),
+    takClientCertStatus: document.getElementById("tak-client-cert-status"),
+    takClientKeyStatus: document.getElementById("tak-client-key-status"),
+    takCaCert: document.getElementById("tak-ca-cert"),
+    takClientCert: document.getElementById("tak-client-cert"),
+    takClientKey: document.getElementById("tak-client-key"),
+    takCertUploadBtn: document.getElementById("tak-cert-upload-btn"),
+    takCertStatus: document.getElementById("tak-cert-status"),
+
     nodesTableBody: document.getElementById("nodes-table-body"),
     messagesList: document.getElementById("messages-list"),
     messageForm: document.getElementById("message-form"),
+    messageTarget: document.getElementById("message-target"),
     messageText: document.getElementById("message-text"),
-    messageTo: document.getElementById("message-to"),
     messageStatus: document.getElementById("message-status"),
     refreshMessagesBtn: document.getElementById("refresh-messages-btn"),
     refreshNodesBtn: document.getElementById("refresh-nodes-btn"),
@@ -102,54 +125,80 @@
     return num.toFixed(6);
   }
 
-  function isNodeOnline(node) {
-    const lastHeard = Number(node.last_heard || 0);
-    const now = Math.floor(Date.now() / 1000);
-    return lastHeard > 0 && now - lastHeard <= 300;
-  }
-
   async function apiGet(url) {
-    const res = await fetch(url, {
+    const response = await fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers: { "Accept": "application/json" },
       cache: "no-store",
     });
-    if (!res.ok) {
-      throw new Error(`GET ${url} failed (${res.status})`);
-    }
-    return await res.json();
-  }
-
-  async function apiPost(url, payload) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `POST ${url} failed (${res.status})`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `Request failed: ${response.status}`);
     }
     return data;
   }
 
+  async function apiPost(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(payload || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `Request failed: ${response.status}`);
+    }
+    return data;
+  }
+
+  async function apiPostForm(url, formData) {
+    const response = await fetch(url, {
+      method: "POST",
+      body: formData,
+      headers: { "Accept": "application/json" },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `Request failed: ${response.status}`);
+    }
+    return data;
+  }
+
+  function openSettings() {
+    if (!els.settingsDrawer) return;
+    els.settingsDrawer.classList.remove("hidden");
+    els.settingsDrawer.setAttribute("aria-hidden", "false");
+  }
+
+  function closeSettings() {
+    if (!els.settingsDrawer) return;
+    els.settingsDrawer.classList.add("hidden");
+    els.settingsDrawer.setAttribute("aria-hidden", "true");
+  }
+
   function toggleConnectionRows() {
-    const type = els.configConnectionType?.value || "serial";
-    if (els.configSerialRow) {
-      els.configSerialRow.style.display = type === "serial" ? "" : "none";
-    }
-    if (els.configTcpRow) {
-      els.configTcpRow.style.display = type === "tcp" ? "" : "none";
-    }
+    const isSerial = safeValue(els.configConnectionType?.value) === "serial";
+    els.configSerialRow?.classList.toggle("is-hidden", !isSerial);
+    els.configTcpRow?.classList.toggle("is-hidden", isSerial);
+  }
+
+  function toggleTakRows() {
+    const enabled = !!els.configTakEnabled?.checked;
+    const protocol = safeValue(els.configTakProtocol?.value, "udp").toLowerCase();
+    const useTls = !!els.configTakTls?.checked;
+
+    els.takSettingsBlock?.classList.toggle("is-hidden", !enabled);
+    els.takTcpOptions?.classList.toggle("is-hidden", !enabled || protocol !== "tcp");
+    els.takTlsOptions?.classList.toggle("is-hidden", !enabled || protocol !== "tcp" || !useTls);
   }
 
   function serializeConfigForm() {
     return {
       connection: {
-        type: els.configConnectionType?.value || "serial",
+        type: safeValue(els.configConnectionType?.value, "serial").toLowerCase(),
         port: safeValue(els.configPort?.value).trim(),
         host: safeValue(els.configHost?.value).trim(),
       },
@@ -157,69 +206,65 @@
         enabled: !!els.configTakEnabled?.checked,
         host: safeValue(els.configTakHost?.value).trim(),
         port: Number(els.configTakPort?.value || 8088),
+        protocol: safeValue(els.configTakProtocol?.value, "udp").toLowerCase(),
         tls: !!els.configTakTls?.checked,
+        verify_server: !!els.configTakVerifyServer?.checked,
       },
     };
   }
 
-  function configPayloadJson() {
-    return JSON.stringify(serializeConfigForm());
-  }
+  function updateCertStatus(certs) {
+    const renderStatus = (item) => {
+      if (!item) return "—";
+      return item.present ? `Present · ${item.name || item.path || "file"}` : `Missing · ${item.name || item.path || "file"}`;
+    };
 
-  function markConfigDirty() {
-    const current = configPayloadJson();
-    state.configDirty = current !== state.lastConfigJson;
-    if (els.configSaveBtn) {
-      els.configSaveBtn.disabled = false;
-    }
-    if (els.configStatus && state.configDirty) {
-      els.configStatus.textContent = "Unsaved changes";
-      els.configStatus.className = "form-status dirty";
-    }
-  }
-
-  function clearConfigDirty(message = "Saved") {
-    state.lastConfigJson = configPayloadJson();
-    state.configDirty = false;
-    if (els.configStatus) {
-      els.configStatus.textContent = message;
-      els.configStatus.className = "form-status clean";
-    }
+    setText(els.takCaCertStatus, renderStatus(certs?.ca_cert));
+    setText(els.takClientCertStatus, renderStatus(certs?.client_cert));
+    setText(els.takClientKeyStatus, renderStatus(certs?.client_key));
   }
 
   function applyConfig(config) {
     if (!config) return;
 
-    if (els.configConnectionType) {
-      els.configConnectionType.value = safeValue(config.connection?.type || "serial");
-    }
-    if (els.configPort) {
-      els.configPort.value = safeValue(config.connection?.port || "");
-    }
-    if (els.configHost) {
-      els.configHost.value = safeValue(config.connection?.host || "");
-    }
-    if (els.configTakEnabled) {
-      els.configTakEnabled.checked = !!config.tak?.enabled;
-    }
-    if (els.configTakHost) {
-      els.configTakHost.value = safeValue(config.tak?.host || "");
-    }
-    if (els.configTakPort) {
-      els.configTakPort.value = safeValue(config.tak?.port || 8088);
-    }
-    if (els.configTakTls) {
-      els.configTakTls.checked = !!config.tak?.tls;
-    }
+    const connection = config.connection || {};
+    const tak = config.tak || {};
+
+    if (els.configConnectionType) els.configConnectionType.value = connection.type || "serial";
+    if (els.configPort) els.configPort.value = connection.port || "";
+    if (els.configHost) els.configHost.value = connection.host || "";
+
+    if (els.configTakEnabled) els.configTakEnabled.checked = !!tak.enabled;
+    if (els.configTakHost) els.configTakHost.value = tak.host || "";
+    if (els.configTakPort) els.configTakPort.value = tak.port ?? 8088;
+    if (els.configTakProtocol) els.configTakProtocol.value = tak.protocol || "udp";
+    if (els.configTakTls) els.configTakTls.checked = !!tak.tls;
+    if (els.configTakVerifyServer) els.configTakVerifyServer.checked = !!tak.verify_server;
 
     toggleConnectionRows();
-    clearConfigDirty("Loaded");
+    toggleTakRows();
+    updateCertStatus(config.certs || {});
+
+    state.lastConfigJson = JSON.stringify(serializeConfigForm());
+    state.configDirty = false;
+    if (els.configStatus) {
+      els.configStatus.textContent = "Loaded";
+      els.configStatus.className = "form-status clean";
+    }
+  }
+
+  function markConfigDirty() {
+    const current = JSON.stringify(serializeConfigForm());
+    const dirty = current !== state.lastConfigJson;
+    state.configDirty = dirty;
+    if (els.configStatus) {
+      els.configStatus.textContent = dirty ? "Unsaved changes" : "Loaded";
+      els.configStatus.className = dirty ? "form-status dirty" : "form-status clean";
+    }
   }
 
   async function loadConfig({ force = false } = {}) {
-    if (state.configDirty && !force) {
-      return;
-    }
+    if (!force && !state.configDirty && state.lastConfigJson) return;
     const data = await apiGet("/api/config");
     applyConfig(data);
   }
@@ -229,50 +274,32 @@
     const takEnabled = !!data.tak_enabled;
     const stats = data.stats || {};
 
-    setBadge(
-      els.statusBadge,
-      connected ? "Connected" : "Disconnected",
-      connected ? "success" : "danger"
-    );
-
-    setText(
-      els.connectionSummary,
-      `${safeValue(data.connection_type || "unknown").toUpperCase()} connection`
-    );
-
-    setText(
-      els.takSummary,
-      takEnabled
-        ? `TAK enabled • queue ${stats.queue_count ?? 0}`
-        : "TAK disabled"
-    );
-
-    setText(els.statsNodes, String(stats.node_count ?? 0));
-    setText(els.statsOnline, String(stats.online_count ?? 0));
-    setText(els.statsPositions, String(stats.position_count ?? 0));
-    setText(els.statsMessages, String(stats.message_count ?? 0));
-    setText(els.statsQueue, String(stats.queue_count ?? 0));
+    setBadge(els.statusBadge, connected ? "Connected" : "Disconnected", connected ? "success" : "danger");
+    setText(els.connectionSummary, `${safeValue(data.connection_type || "serial").toUpperCase()} · ${connected ? "Online" : "Offline"}`);
+    setText(els.takSummary, takEnabled ? `Enabled · Queue ${stats.queue_count ?? 0}` : "Disabled");
+    setText(els.statsNodes, stats.node_count ?? 0);
+    setText(els.statsOnline, stats.online_count ?? 0);
+    setText(els.statsPositions, stats.position_count ?? 0);
+    setText(els.statsMessages, stats.message_count ?? 0);
+    setText(els.statsQueue, stats.queue_count ?? 0);
   }
 
   function renderNodes(nodes) {
     if (!els.nodesTableBody) return;
 
     if (!nodes || nodes.length === 0) {
-      setHtml(
-        els.nodesTableBody,
-        `<tr><td colspan="9" class="empty-state">No nodes seen yet.</td></tr>`
-      );
+      setHtml(els.nodesTableBody, '<tr><td colspan="9" class="empty-state">No nodes seen yet.</td></tr>');
       return;
     }
 
     const rows = nodes.map((node) => {
-      const online = isNodeOnline(node);
-      const statusClass = online ? "success" : "muted";
-      const statusText = online ? "Online" : "Offline";
+      const isOnline = node.last_heard && (Math.floor(Date.now() / 1000) - Number(node.last_heard) <= 300);
+      const statusClass = isOnline ? "success" : "muted";
+      const statusText = isOnline ? "Online" : "Stale";
       return `
         <tr>
           <td>
-            <div class="node-name">${escapeHtml(node.display_name || node.node_id || "Unknown")}</div>
+            <div class="node-name">${escapeHtml(node.display_name || node.short_name || node.node_id || "Unknown")}</div>
             <div class="node-subtle">${escapeHtml(node.long_name || "")}</div>
           </td>
           <td><code>${escapeHtml(node.node_id || "")}</code></td>
@@ -307,44 +334,62 @@
     if (!els.messagesList) return;
 
     if (!messages || messages.length === 0) {
-      setHtml(
-        els.messagesList,
-        `<div class="empty-state">No messages yet.</div>`
-      );
+      setHtml(els.messagesList, '<div class="empty-state">No messages yet.</div>');
       return;
     }
 
-    const html = messages
-      .slice()
-      .reverse()
-      .map((msg) => {
-        const isRx = msg.direction === "rx";
-        const directionClass = isRx ? "rx" : "tx";
-        const directionText = isRx ? "RX" : "TX";
-        const source = messageSourceLabel(msg);
-        const target = messageTargetLabel(msg);
-        const meta = isRx
-          ? `From ${escapeHtml(source)} → ${escapeHtml(target)}`
-          : `To ${escapeHtml(target)}`;
+    const html = messages.slice().reverse().map((msg) => {
+      const isRx = msg.direction === "rx";
+      const directionClass = isRx ? "rx" : "tx";
+      const directionText = isRx ? "RX" : "TX";
+      const source = messageSourceLabel(msg);
+      const target = messageTargetLabel(msg);
+      const meta = isRx ? `From ${escapeHtml(source)} → ${escapeHtml(target)}` : `To ${escapeHtml(target)}`;
 
-        return `
-          <div class="message-card ${directionClass}">
-            <div class="message-header">
-              <span class="pill ${directionClass}">${directionText}</span>
-              <span class="message-meta">${meta}</span>
-              <span class="message-time" title="${escapeHtml(formatEpoch(msg.timestamp))}">${escapeHtml(formatRelativeEpoch(msg.timestamp))}</span>
-            </div>
-            <div class="message-body">${escapeHtml(msg.text || "")}</div>
-            <div class="message-subtle">
-              ${escapeHtml(source)}
-              ${msg.channel ? `• Channel ${escapeHtml(msg.channel)}` : ""}
-            </div>
+      return `
+        <div class="message-card ${directionClass}">
+          <div class="message-header">
+            <span class="pill ${directionClass}">${directionText}</span>
+            <span class="message-meta">${meta}</span>
+            <span class="message-time" title="${escapeHtml(formatEpoch(msg.timestamp))}">${escapeHtml(formatRelativeEpoch(msg.timestamp))}</span>
           </div>
-        `;
-      })
-      .join("");
+          <div class="message-body">${escapeHtml(msg.text || "")}</div>
+          <div class="message-subtle">
+            ${escapeHtml(source)}
+            ${msg.channel ? `• ${escapeHtml(msg.channel)}` : ""}
+          </div>
+        </div>
+      `;
+    }).join("");
 
     setHtml(els.messagesList, html);
+  }
+
+  function renderTargets(data) {
+    state.targets.channels = data.channels || [];
+    state.targets.nodes = data.nodes || [];
+
+    if (!els.messageTarget) return;
+
+    const previous = safeValue(els.messageTarget.value);
+    const channelOptions = state.targets.channels.map((item) => (
+      `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`
+    )).join("");
+    const nodeOptions = state.targets.nodes.map((item) => (
+      `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`
+    )).join("");
+
+    setHtml(els.messageTarget, `
+      <optgroup label="Channels">${channelOptions}</optgroup>
+      <optgroup label="Nodes">${nodeOptions}</optgroup>
+    `);
+
+    const allValues = [...state.targets.channels, ...state.targets.nodes].map((item) => item.value);
+    if (allValues.includes(previous)) {
+      els.messageTarget.value = previous;
+    } else if (state.targets.channels[0]) {
+      els.messageTarget.value = state.targets.channels[0].value;
+    }
   }
 
   function initMap() {
@@ -353,7 +398,6 @@
     if (!mapEl) return;
 
     state.map = L.map(mapEl).setView([32.0, -83.0], 6);
-
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap contributors",
@@ -413,6 +457,21 @@
     }
   }
 
+  function parseSelectedTarget() {
+    const raw = safeValue(els.messageTarget?.value).trim();
+    if (!raw) return { to: null, channel_index: 0, channel_name: "Default Channel" };
+    const [type, value] = raw.split(":", 2);
+    if (type === "node") {
+      return { to: value || null, channel_index: 0, channel_name: "Direct Message" };
+    }
+    const selected = state.targets.channels.find((item) => item.value === raw);
+    return {
+      to: null,
+      channel_index: Number(selected?.channel_index ?? 0),
+      channel_name: selected?.channel_name || "Default Channel",
+    };
+  }
+
   async function refreshStatus() {
     const data = await apiGet("/api/status");
     renderStatus(data);
@@ -433,10 +492,14 @@
     renderMap(data.nodes || []);
   }
 
+  async function refreshTargets() {
+    const data = await apiGet("/api/message-targets");
+    renderTargets(data);
+  }
+
   async function sendMessage(evt) {
     evt.preventDefault();
     const text = safeValue(els.messageText?.value).trim();
-    const to = safeValue(els.messageTo?.value).trim();
 
     if (!text) {
       if (els.messageStatus) {
@@ -452,22 +515,21 @@
     }
 
     try {
+      const target = parseSelectedTarget();
       await apiPost("/api/messages/send", {
         text,
-        to: to || null,
+        to: target.to,
+        channel_index: target.channel_index,
+        channel_name: target.channel_name,
       });
 
-      if (els.messageText) {
-        els.messageText.value = "";
-      }
-
+      if (els.messageText) els.messageText.value = "";
       if (els.messageStatus) {
         els.messageStatus.textContent = "Queued";
         els.messageStatus.className = "form-status clean";
       }
 
-      await refreshMessages();
-      await refreshStatus();
+      await Promise.allSettled([refreshMessages(), refreshStatus()]);
     } catch (err) {
       if (els.messageStatus) {
         els.messageStatus.textContent = err.message || "Send failed";
@@ -476,9 +538,45 @@
     }
   }
 
+  async function uploadTakCerts() {
+    const formData = new FormData();
+    if (els.takCaCert?.files?.[0]) formData.append("ca_cert", els.takCaCert.files[0]);
+    if (els.takClientCert?.files?.[0]) formData.append("client_cert", els.takClientCert.files[0]);
+    if (els.takClientKey?.files?.[0]) formData.append("client_key", els.takClientKey.files[0]);
+
+    if ([...formData.keys()].length === 0) {
+      if (els.takCertStatus) {
+        els.takCertStatus.textContent = "Choose at least one file";
+        els.takCertStatus.className = "form-status error";
+      }
+      return;
+    }
+
+    if (els.takCertStatus) {
+      els.takCertStatus.textContent = "Uploading...";
+      els.takCertStatus.className = "form-status working";
+    }
+
+    try {
+      const data = await apiPostForm("/api/tak/certs", formData);
+      updateCertStatus(data.config?.certs || {});
+      if (els.takCaCert) els.takCaCert.value = "";
+      if (els.takClientCert) els.takClientCert.value = "";
+      if (els.takClientKey) els.takClientKey.value = "";
+      if (els.takCertStatus) {
+        els.takCertStatus.textContent = data.message || "Uploaded";
+        els.takCertStatus.className = "form-status clean";
+      }
+    } catch (err) {
+      if (els.takCertStatus) {
+        els.takCertStatus.textContent = err.message || "Upload failed";
+        els.takCertStatus.className = "form-status error";
+      }
+    }
+  }
+
   async function saveConfig(evt) {
     evt.preventDefault();
-
     if (els.configStatus) {
       els.configStatus.textContent = "Saving...";
       els.configStatus.className = "form-status working";
@@ -513,71 +611,67 @@
   }
 
   function bindEvents() {
-    if (els.configConnectionType) {
-      els.configConnectionType.addEventListener("change", () => {
-        toggleConnectionRows();
-        markConfigDirty();
-      });
-    }
-
-    [
-      els.configPort,
-      els.configHost,
-      els.configTakHost,
-      els.configTakPort,
-      els.configTakEnabled,
-      els.configTakTls,
-    ].forEach((el) => {
-      if (!el) return;
-      el.addEventListener("input", markConfigDirty);
-      el.addEventListener("change", markConfigDirty);
+    els.settingsToggle?.addEventListener("click", openSettings);
+    els.settingsClose?.addEventListener("click", closeSettings);
+    els.settingsDrawer?.addEventListener("click", (evt) => {
+      if (evt.target === els.settingsDrawer) closeSettings();
     });
 
-    if (els.configForm) {
-      els.configForm.addEventListener("submit", saveConfig);
-    }
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape") closeSettings();
+    });
 
-    if (els.configResetBtn) {
-      els.configResetBtn.addEventListener("click", resetConfig);
-    }
-
-    if (els.messageForm) {
-      els.messageForm.addEventListener("submit", sendMessage);
-    }
-
-    if (els.refreshMessagesBtn) {
-      els.refreshMessagesBtn.addEventListener("click", refreshMessages);
-    }
-
-    if (els.refreshNodesBtn) {
-      els.refreshNodesBtn.addEventListener("click", async () => {
-        await refreshNodes();
-        await refreshMap();
+    [
+      els.configConnectionType,
+      els.configPort,
+      els.configHost,
+      els.configTakEnabled,
+      els.configTakHost,
+      els.configTakPort,
+      els.configTakProtocol,
+      els.configTakTls,
+      els.configTakVerifyServer,
+    ].forEach((el) => {
+      if (!el) return;
+      el.addEventListener("input", () => {
+        toggleConnectionRows();
+        toggleTakRows();
+        markConfigDirty();
       });
-    }
+      el.addEventListener("change", () => {
+        toggleConnectionRows();
+        toggleTakRows();
+        markConfigDirty();
+      });
+    });
+
+    els.configForm?.addEventListener("submit", saveConfig);
+    els.configResetBtn?.addEventListener("click", resetConfig);
+    els.messageForm?.addEventListener("submit", sendMessage);
+    els.refreshMessagesBtn?.addEventListener("click", refreshMessages);
+    els.refreshNodesBtn?.addEventListener("click", async () => {
+      await Promise.allSettled([refreshNodes(), refreshTargets(), refreshMap()]);
+    });
+    els.takCertUploadBtn?.addEventListener("click", uploadTakCerts);
   }
 
   function schedulePolling() {
-    state.polling.status = window.setInterval(() => {
-      refreshStatus().catch(() => {});
-    }, 3000);
+    clearInterval(state.polling.status);
+    clearInterval(state.polling.nodes);
+    clearInterval(state.polling.messages);
+    clearInterval(state.polling.map);
+    clearInterval(state.polling.targets);
 
-    state.polling.nodes = window.setInterval(() => {
-      refreshNodes().catch(() => {});
-    }, 5000);
-
-    state.polling.messages = window.setInterval(() => {
-      refreshMessages().catch(() => {});
-    }, 3000);
-
-    state.polling.map = window.setInterval(() => {
-      refreshMap().catch(() => {});
-    }, 5000);
+    state.polling.status = setInterval(() => void refreshStatus().catch(() => {}), 5000);
+    state.polling.nodes = setInterval(() => void refreshNodes().catch(() => {}), 12000);
+    state.polling.messages = setInterval(() => void refreshMessages().catch(() => {}), 8000);
+    state.polling.map = setInterval(() => void refreshMap().catch(() => {}), 12000);
+    state.polling.targets = setInterval(() => void refreshTargets().catch(() => {}), 15000);
   }
 
   async function bootstrap() {
-    bindEvents();
     initMap();
+    bindEvents();
 
     try {
       await loadConfig({ force: true });
@@ -593,6 +687,7 @@
       refreshNodes(),
       refreshMessages(),
       refreshMap(),
+      refreshTargets(),
     ]);
 
     schedulePolling();

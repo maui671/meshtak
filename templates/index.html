@@ -5,11 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MeshTAK</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    crossorigin=""
-  >
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 </head>
 <body>
   <div class="app-shell">
@@ -20,8 +16,122 @@
       </div>
       <div class="topbar-right">
         <span id="status-badge" class="badge muted">Loading</span>
+        <button id="settings-toggle" type="button" class="icon-btn" aria-label="Open settings">⚙</button>
       </div>
     </header>
+
+    <aside id="settings-drawer" class="settings-drawer hidden" aria-hidden="true">
+      <div class="settings-card panel">
+        <div class="panel-header">
+          <h2>Settings</h2>
+          <button id="settings-close" type="button" class="icon-btn" aria-label="Close settings">✕</button>
+        </div>
+
+        <form id="config-form" class="form-grid">
+          <div class="section-label">Meshtastic</div>
+
+          <div class="form-row">
+            <label for="config-connection-type">Connection Type</label>
+            <select id="config-connection-type" name="connection_type">
+              <option value="serial">Serial</option>
+              <option value="tcp">TCP</option>
+            </select>
+          </div>
+
+          <div id="config-serial-row" class="form-row">
+            <label for="config-port">Serial Port</label>
+            <input id="config-port" name="port" type="text" placeholder="/dev/ttyACM0">
+          </div>
+
+          <div id="config-tcp-row" class="form-row">
+            <label for="config-host">TCP Host</label>
+            <input id="config-host" name="host" type="text" placeholder="192.168.1.50">
+          </div>
+
+          <div class="section-label">TAK</div>
+
+          <div class="form-row form-row-checkbox">
+            <label for="config-tak-enabled">Enable TAK Forwarding</label>
+            <input id="config-tak-enabled" name="tak_enabled" type="checkbox">
+          </div>
+
+          <div id="tak-settings-block" class="settings-block">
+            <div class="form-row">
+              <label for="config-tak-host">TAK Host</label>
+              <input id="config-tak-host" name="tak_host" type="text" placeholder="takserver.local">
+            </div>
+
+            <div class="form-row two-up">
+              <div>
+                <label for="config-tak-port">TAK Port</label>
+                <input id="config-tak-port" name="tak_port" type="number" min="1" max="65535" placeholder="8088">
+              </div>
+              <div>
+                <label for="config-tak-protocol">Transport</label>
+                <select id="config-tak-protocol" name="tak_protocol">
+                  <option value="udp">UDP</option>
+                  <option value="tcp">TCP</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="tak-tcp-options" class="settings-block nested-block">
+              <div class="form-row form-row-checkbox">
+                <label for="config-tak-tls">Use TLS for TAK TCP</label>
+                <input id="config-tak-tls" name="tak_tls" type="checkbox">
+              </div>
+
+              <div id="tak-tls-options" class="settings-block nested-block">
+                <div class="form-row form-row-checkbox">
+                  <label for="config-tak-verify-server">Verify TAK Server Cert</label>
+                  <input id="config-tak-verify-server" name="tak_verify_server" type="checkbox">
+                </div>
+
+                <div class="cert-status-grid">
+                  <div class="cert-status-card">
+                    <div class="cert-status-label">CA Cert</div>
+                    <div id="tak-ca-cert-status" class="cert-status-value">—</div>
+                  </div>
+                  <div class="cert-status-card">
+                    <div class="cert-status-label">Client Cert</div>
+                    <div id="tak-client-cert-status" class="cert-status-value">—</div>
+                  </div>
+                  <div class="cert-status-card">
+                    <div class="cert-status-label">Client Key</div>
+                    <div id="tak-client-key-status" class="cert-status-value">—</div>
+                  </div>
+                </div>
+
+                <div id="tak-cert-form" class="form-grid compact-form">
+                  <div class="form-row">
+                    <label for="tak-ca-cert">CA Cert</label>
+                    <input id="tak-ca-cert" name="ca_cert" type="file" accept=".pem,.crt,.cer,.ca">
+                  </div>
+                  <div class="form-row">
+                    <label for="tak-client-cert">Client Cert</label>
+                    <input id="tak-client-cert" name="client_cert" type="file" accept=".pem,.crt,.cer">
+                  </div>
+                  <div class="form-row">
+                    <label for="tak-client-key">Client Key</label>
+                    <input id="tak-client-key" name="client_key" type="file" accept=".pem,.key">
+                  </div>
+                  <div class="form-actions">
+                    <button id="tak-cert-upload-btn" type="button" class="btn btn-secondary">Upload TLS Files</button>
+                    <div id="tak-cert-status" class="form-status">Idle</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions sticky-actions">
+            <button id="config-save-btn" type="submit" class="btn btn-primary">Save Settings</button>
+            <button id="config-reset-btn" type="button" class="btn btn-secondary">Reload</button>
+            <div id="config-status" class="form-status">Idle</div>
+          </div>
+        </form>
+      </div>
+    </aside>
 
     <main class="main-grid">
       <section class="panel panel-summary">
@@ -67,58 +177,6 @@
         <div id="map" class="map-frame"></div>
       </section>
 
-      <section class="panel panel-config">
-        <div class="panel-header">
-          <h2>Configuration</h2>
-        </div>
-
-        <form id="config-form" class="form-grid">
-          <div class="form-row">
-            <label for="config-connection-type">Connection Type</label>
-            <select id="config-connection-type" name="connection_type">
-              <option value="serial">Serial</option>
-              <option value="tcp">TCP</option>
-            </select>
-          </div>
-
-          <div id="config-serial-row" class="form-row">
-            <label for="config-port">Serial Port</label>
-            <input id="config-port" name="port" type="text" placeholder="/dev/ttyACM0">
-          </div>
-
-          <div id="config-tcp-row" class="form-row">
-            <label for="config-host">TCP Host</label>
-            <input id="config-host" name="host" type="text" placeholder="192.168.1.50">
-          </div>
-
-          <div class="form-row form-row-checkbox">
-            <label for="config-tak-enabled">Enable TAK Forwarding</label>
-            <input id="config-tak-enabled" name="tak_enabled" type="checkbox">
-          </div>
-
-          <div class="form-row">
-            <label for="config-tak-host">TAK Host</label>
-            <input id="config-tak-host" name="tak_host" type="text" placeholder="takserver.local">
-          </div>
-
-          <div class="form-row">
-            <label for="config-tak-port">TAK Port</label>
-            <input id="config-tak-port" name="tak_port" type="number" min="1" max="65535" placeholder="8088">
-          </div>
-
-          <div class="form-row form-row-checkbox">
-            <label for="config-tak-tls">Use TLS for TAK</label>
-            <input id="config-tak-tls" name="tak_tls" type="checkbox">
-          </div>
-
-          <div class="form-actions">
-            <button id="config-save-btn" type="submit" class="btn btn-primary">Save Config</button>
-            <button id="config-reset-btn" type="button" class="btn btn-secondary">Reload</button>
-            <div id="config-status" class="form-status">Idle</div>
-          </div>
-        </form>
-      </section>
-
       <section class="panel panel-messages">
         <div class="panel-header">
           <h2>Messaging</h2>
@@ -126,13 +184,13 @@
 
         <form id="message-form" class="message-form">
           <div class="form-row">
-            <label for="message-text">Message</label>
-            <textarea id="message-text" name="message_text" rows="3" placeholder="Enter message text"></textarea>
+            <label for="message-target">Target</label>
+            <select id="message-target" name="message_target"></select>
           </div>
 
           <div class="form-row">
-            <label for="message-to">Destination Node ID (blank = broadcast)</label>
-            <input id="message-to" name="message_to" type="text" placeholder="!abcd1234">
+            <label for="message-text">Message</label>
+            <textarea id="message-text" name="message_text" rows="3" placeholder="Enter message text"></textarea>
           </div>
 
           <div class="form-actions">
@@ -179,10 +237,7 @@
     </main>
   </div>
 
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    crossorigin=""
-  ></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

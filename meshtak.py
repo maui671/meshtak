@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from html import escape
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
@@ -161,6 +161,94 @@ class MeshTAK:
             return f"!{cleaned}"
 
         return f"!{node_id.lower()}"
+
+    def _coerce_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _coerce_int(self, value: Any, default: Optional[int] = None) -> Optional[int]:
+        if value is None or value == "":
+            return default
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def _iter_local_channels(self) -> List[Dict[str, Any]]:
+        local_node = getattr(self.interface, "localNode", None)
+        raw_channels = getattr(local_node, "channels", None) if local_node is not None else None
+        if raw_channels is None:
+            return []
+
+        if isinstance(raw_channels, dict):
+            items = raw_channels.items()
+        elif isinstance(raw_channels, list):
+            items = enumerate(raw_channels)
+        else:
+            return []
+
+        channels: List[Dict[str, Any]] = []
+        seen = set()
+
+        for key, channel in items:
+            if channel is None:
+                continue
+
+            if isinstance(channel, dict):
+                channel_dict = dict(channel)
+            else:
+                channel_dict = {}
+                for attr in ("index", "role", "settings", "name"):
+                    if hasattr(channel, attr):
+                        channel_dict[attr] = getattr(channel, attr)
+
+            settings = channel_dict.get("settings")
+            if isinstance(settings, dict):
+                settings_dict = dict(settings)
+            else:
+                settings_dict = {}
+                for attr in ("name", "psk"):
+                    if hasattr(settings, attr):
+                        settings_dict[attr] = getattr(settings, attr)
+
+            index = self._coerce_int(channel_dict.get("index"), self._coerce_int(key, 0)) or 0
+            role = self._coerce_text(channel_dict.get("role")).upper()
+            name = self._coerce_text(settings_dict.get("name") or channel_dict.get("name"))
+
+            if role in {"DISABLED", "CHANNEL_ROLE_DISABLED"}:
+                continue
+
+            if index in seen:
+                continue
+            seen.add(index)
+
+            channels.append({
+                "index": index,
+                "name": name or ("Default Channel" if index == 0 else f"Channel {index}"),
+                "role": role or ("PRIMARY" if index == 0 else "SECONDARY"),
+            })
+
+        channels.sort(key=lambda item: (item.get("index", 0), item.get("name", "")))
+        if not channels:
+            channels.append({"index": 0, "name": "Default Channel", "role": "PRIMARY"})
+        return channels
+
+    def get_channels(self) -> List[Dict[str, Any]]:
+        try:
+            return self._iter_local_channels()
+        except Exception as exc:
+            log.debug("Channel enumeration failed: %s", exc)
+            return [{"index": 0, "name": "Default Channel", "role": "PRIMARY"}]
+
+    def get_channel_label(self, channel_index: Optional[Any]) -> str:
+        idx = self._coerce_int(channel_index)
+        if idx is None:
+            return ""
+        for channel in self.get_channels():
+            if self._coerce_int(channel.get("index")) == idx:
+                return self._coerce_text(channel.get("name")) or f"Channel {idx}"
+        return "Default Channel" if idx == 0 else f"Channel {idx}"
 
     def _radio_maintenance_paused(self) -> bool:
         return time.time() < self.tx_priority_until
@@ -426,7 +514,8 @@ class MeshTAK:
 
             elif portnum == "TEXT_MESSAGE_APP":
                 text = decoded.get("text", "")
-                channel = str(packet.get("channel") or decoded.get("channel") or "")
+                channel_index = packet.get("channel") if packet.get("channel") is not None else decoded.get("channel")
+                channel = self.get_channel_label(channel_index)
 
                 msg = self.store.add_message(
                     direction="rx",
@@ -564,8 +653,21 @@ class MeshTAK:
                 else:
                     sock = socket.create_connection((host, port), timeout=5)
                     if use_tls:
-                        context = ssl.create_default_context()
-                        sock = context.wrap_socket(sock, server_hostname=host)
+                        verify_server = bool(tak_cfg.get("verify_server", False))
+                        ca_cert = str(tak_cfg.get("ca_cert", "")).strip()
+                        client_cert = str(tak_cfg.get("client_cert", "")).strip()
+                        client_key = str(tak_cfg.get("client_key", "")).strip()
+
+                        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+                        if ca_cert and os.path.exists(ca_cert):
+                            context.load_verify_locations(cafile=ca_cert)
+                        if client_cert and client_key and os.path.exists(client_cert) and os.path.exists(client_key):
+                            context.load_cert_chain(certfile=client_cert, keyfile=client_key)
+                        if not verify_server:
+                            context.check_hostname = False
+                            context.verify_mode = ssl.CERT_NONE
+
+                        sock = context.wrap_socket(sock, server_hostname=host if verify_server else None)
                     sock.sendall(payload)
                     sock.close()
                     log.info(
@@ -607,7 +709,12 @@ class MeshTAK:
             time.sleep(0.5)
 
             try:
-                self.send_message(msg.get("text", ""), msg.get("to"))
+                self.send_message(
+                    msg.get("text", ""),
+                    msg.get("to"),
+                    channel_index=msg.get("channel_index"),
+                    channel_name=msg.get("channel_name"),
+                )
             except Exception as exc:
                 failed_to = self._normalize_node_id(msg.get("to"))
                 log.error("TX worker send failed to=%s error=%s", failed_to or "broadcast", exc)
@@ -619,6 +726,7 @@ class MeshTAK:
                     from_id="self",
                     from_name="MeshTAK",
                     to_name=failed_to or "Broadcast",
+                    channel=msg.get("channel_name") or self.get_channel_label(msg.get("channel_index")),
                     rx_timestamp=int(time.time()),
                     raw={"status": "failed", "error": str(exc)},
                 )

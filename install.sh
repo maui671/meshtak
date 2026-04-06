@@ -30,7 +30,12 @@ TCP_HOST=""
 TAK_ENABLED="false"
 TAK_HOST=""
 TAK_PORT="8088"
+TAK_PROTOCOL="udp"
 TAK_TLS="false"
+TAK_VERIFY_SERVER="false"
+TAK_CA_CERT="$CERT_DIR/tak-ca.pem"
+TAK_CLIENT_CERT="$CERT_DIR/tak-client.crt"
+TAK_CLIENT_KEY="$CERT_DIR/tak-client.key"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$INSTALL_LOG"
@@ -159,6 +164,62 @@ ask_ip_host() {
   TCP_HOST="${TCP_HOST:-192.168.1.100}"
 }
 
+ask_tak_questions() {
+  echo
+  echo "--- TAK Configuration ---"
+
+  local tak_choice
+  tak_choice="$(prompt_yes_no "Enable TAK forwarding?" "n")"
+  if [[ "$tak_choice" != "y" ]]; then
+    TAK_ENABLED="false"
+    TAK_HOST=""
+    TAK_PORT="8088"
+    TAK_PROTOCOL="udp"
+    TAK_TLS="false"
+    TAK_VERIFY_SERVER="false"
+    return 0
+  fi
+
+  TAK_ENABLED="true"
+
+  read -r -p "TAK host [127.0.0.1]: " TAK_HOST
+  TAK_HOST="${TAK_HOST:-127.0.0.1}"
+
+  read -r -p "TAK port [8088]: " TAK_PORT
+  TAK_PORT="${TAK_PORT:-8088}"
+
+  while true; do
+    read -r -p "TAK ingest transport [udp/tcp] [udp]: " TAK_PROTOCOL
+    TAK_PROTOCOL="${TAK_PROTOCOL:-udp}"
+    TAK_PROTOCOL="${TAK_PROTOCOL,,}"
+    case "$TAK_PROTOCOL" in
+      udp|tcp) break ;;
+      *) echo "Please enter udp or tcp." ;;
+    esac
+  done
+
+  if [[ "$TAK_PROTOCOL" == "tcp" ]]; then
+    local tls_choice
+    tls_choice="$(prompt_yes_no "Use TLS for TAK TCP?" "n")"
+    if [[ "$tls_choice" == "y" ]]; then
+      TAK_TLS="true"
+      local verify_choice
+      verify_choice="$(prompt_yes_no "Verify TAK server certificate?" "n")"
+      if [[ "$verify_choice" == "y" ]]; then
+        TAK_VERIFY_SERVER="true"
+      else
+        TAK_VERIFY_SERVER="false"
+      fi
+    else
+      TAK_TLS="false"
+      TAK_VERIFY_SERVER="false"
+    fi
+  else
+    TAK_TLS="false"
+    TAK_VERIFY_SERVER="false"
+  fi
+}
+
 ask_questions() {
   log "Starting installer prompts"
 
@@ -170,31 +231,7 @@ ask_questions() {
     ask_ip_host
   fi
 
-  echo
-  echo "--- TAK Configuration ---"
-  local tak_choice
-  tak_choice="$(prompt_yes_no "Enable TAK forwarding?" "n")"
-  if [[ "$tak_choice" == "y" ]]; then
-    TAK_ENABLED="true"
-    read -r -p "TAK host [127.0.0.1]: " TAK_HOST
-    TAK_HOST="${TAK_HOST:-127.0.0.1}"
-
-    read -r -p "TAK port [8088]: " TAK_PORT
-    TAK_PORT="${TAK_PORT:-8088}"
-
-    local tls_choice
-    tls_choice="$(prompt_yes_no "Use TLS for TAK?" "n")"
-    if [[ "$tls_choice" == "y" ]]; then
-      TAK_TLS="true"
-    else
-      TAK_TLS="false"
-    fi
-  else
-    TAK_ENABLED="false"
-    TAK_HOST=""
-    TAK_PORT="8088"
-    TAK_TLS="false"
-  fi
+  ask_tak_questions
 
   echo
   log "Prompt summary:"
@@ -207,7 +244,9 @@ ask_questions() {
   log "  TAK enabled: $TAK_ENABLED"
   log "  TAK host: ${TAK_HOST:-<disabled>}"
   log "  TAK port: $TAK_PORT"
+  log "  TAK protocol: $TAK_PROTOCOL"
   log "  TAK TLS: $TAK_TLS"
+  log "  TAK verify server: $TAK_VERIFY_SERVER"
 }
 
 install_packages() {
@@ -276,7 +315,7 @@ write_config() {
   log "Writing config file to $CONFIG_FILE"
 
   if [[ "$CONNECTION_TYPE" == "serial" ]]; then
-    cat > "$CONFIG_FILE" <<EOF
+    cat > "$CONFIG_FILE" <<EOF_JSON
 {
   "connection": {
     "type": "serial",
@@ -286,7 +325,17 @@ write_config() {
     "enabled": $TAK_ENABLED,
     "host": "$TAK_HOST",
     "port": $TAK_PORT,
-    "tls": $TAK_TLS
+    "protocol": "$TAK_PROTOCOL",
+    "tls": $TAK_TLS,
+    "verify_server": $TAK_VERIFY_SERVER,
+    "ca_cert": "$TAK_CA_CERT",
+    "client_cert": "$TAK_CLIENT_CERT",
+    "client_key": "$TAK_CLIENT_KEY"
+  },
+  "cot": {
+    "type": "a-f-G-U-C",
+    "team": "Orange",
+    "role": "RTO"
   },
   "web": {
     "host": "$WEB_HOST",
@@ -295,9 +344,9 @@ write_config() {
     "tls_key": "$KEY_PATH"
   }
 }
-EOF
+EOF_JSON
   else
-    cat > "$CONFIG_FILE" <<EOF
+    cat > "$CONFIG_FILE" <<EOF_JSON
 {
   "connection": {
     "type": "tcp",
@@ -307,7 +356,17 @@ EOF
     "enabled": $TAK_ENABLED,
     "host": "$TAK_HOST",
     "port": $TAK_PORT,
-    "tls": $TAK_TLS
+    "protocol": "$TAK_PROTOCOL",
+    "tls": $TAK_TLS,
+    "verify_server": $TAK_VERIFY_SERVER,
+    "ca_cert": "$TAK_CA_CERT",
+    "client_cert": "$TAK_CLIENT_CERT",
+    "client_key": "$TAK_CLIENT_KEY"
+  },
+  "cot": {
+    "type": "a-f-G-U-C",
+    "team": "Orange",
+    "role": "RTO"
   },
   "web": {
     "host": "$WEB_HOST",
@@ -316,7 +375,7 @@ EOF
     "tls_key": "$KEY_PATH"
   }
 }
-EOF
+EOF_JSON
   fi
 }
 
@@ -349,6 +408,9 @@ set_permissions() {
   chmod 755 "$DATA_DIR" "$STATIC_DIR" "$TEMPLATE_DIR" "$CERT_DIR" "$LOG_DIR"
   chmod 600 "$KEY_PATH"
   chmod 644 "$CERT_PATH" "$CONFIG_FILE"
+  [[ -f "$TAK_CLIENT_KEY" ]] && chmod 600 "$TAK_CLIENT_KEY"
+  [[ -f "$TAK_CLIENT_CERT" ]] && chmod 644 "$TAK_CLIENT_CERT"
+  [[ -f "$TAK_CA_CERT" ]] && chmod 644 "$TAK_CA_CERT"
   chmod 664 "$LOG_DIR/meshtak.log" "$LOG_DIR/webui.log" "$LOG_DIR/wrapper.log"
 }
 
@@ -367,7 +429,7 @@ ensure_serial_access() {
 
 write_systemd_service() {
   log "Writing systemd service file"
-  cat > "$SERVICE_FILE" <<EOF
+  cat > "$SERVICE_FILE" <<EOF_SERVICE
 [Unit]
 Description=MeshTAK Service
 After=network-online.target
@@ -385,7 +447,7 @@ Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF_SERVICE
 }
 
 configure_firewall() {

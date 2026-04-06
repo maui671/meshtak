@@ -1,15 +1,29 @@
 {
   "connection": {
     "type": "serial",
-    "serial_device": "/dev/ttyACM0",
-    "ip": "192.168.1.100",
-    "port": 4403
+    "port": "/dev/ttyACM0",
+    "host": "192.168.1.100"
   },
   "tak": {
+    "enabled": false,
     "host": "127.0.0.1",
-    "port": 8087
+    "port": 8088,
+    "protocol": "udp",
+    "tls": false,
+    "verify_server": false,
+    "ca_cert": "/opt/meshtak/certs/tak-ca.pem",
+    "client_cert": "/opt/meshtak/certs/tak-client.crt",
+    "client_key": "/opt/meshtak/certs/tak-client.key"
   },
-  "logging": {
-    "file": "/var/log/meshtak.log"
+  "cot": {
+    "type": "a-f-G-U-C",
+    "team": "Orange",
+    "role": "RTO"
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8443,
+    "tls_cert": "/opt/meshtak/certs/meshtak.crt",
+    "tls_key": "/opt/meshtak/certs/meshtak.key"
   }
 }

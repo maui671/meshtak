@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, Optional
 
 from flask import Flask, jsonify, render_template, request
+from werkzeug.utils import secure_filename
 
 from meshtak import MeshTAK, CONFIG_PATH
 
@@ -21,6 +22,9 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 CERT_PATH = os.path.join(CERT_DIR, "meshtak.crt")
 KEY_PATH = os.path.join(CERT_DIR, "meshtak.key")
 LOG_PATH = os.path.join(LOG_DIR, "webui.log")
+TAK_CA_CERT_PATH = os.path.join(CERT_DIR, "tak-ca.pem")
+TAK_CLIENT_CERT_PATH = os.path.join(CERT_DIR, "tak-client.crt")
+TAK_CLIENT_KEY_PATH = os.path.join(CERT_DIR, "tak-client.key")
 
 
 def ensure_log_dir() -> None:
@@ -108,7 +112,12 @@ class MeshTAKWebUI:
                 "enabled": _boolify(tak.get("enabled", False)),
                 "host": tak.get("host", ""),
                 "port": int(tak.get("port", 8088) or 8088),
+                "protocol": str(tak.get("protocol", "udp")).strip().lower() or "udp",
                 "tls": _boolify(tak.get("tls", False)),
+                "verify_server": _boolify(tak.get("verify_server", False)),
+                "ca_cert": str(tak.get("ca_cert", TAK_CA_CERT_PATH)).strip() or TAK_CA_CERT_PATH,
+                "client_cert": str(tak.get("client_cert", TAK_CLIENT_CERT_PATH)).strip() or TAK_CLIENT_CERT_PATH,
+                "client_key": str(tak.get("client_key", TAK_CLIENT_KEY_PATH)).strip() or TAK_CLIENT_KEY_PATH,
             },
             "web": {
                 "host": web.get("host", "0.0.0.0"),
@@ -116,6 +125,7 @@ class MeshTAKWebUI:
                 "tls_cert": web.get("tls_cert", CERT_PATH),
                 "tls_key": web.get("tls_key", KEY_PATH),
             },
+            "certs": self._tak_cert_state(config),
         }
 
     def _safe_node_payload(self, node: Dict[str, Any]) -> Dict[str, Any]:
@@ -152,6 +162,73 @@ class MeshTAKWebUI:
             "timestamp": msg.get("timestamp"),
             "created_at": msg.get("created_at"),
         }
+
+    def _tak_cert_state(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        tak = config.get("tak", {})
+        ca_cert = str(tak.get("ca_cert", TAK_CA_CERT_PATH)).strip() or TAK_CA_CERT_PATH
+        client_cert = str(tak.get("client_cert", TAK_CLIENT_CERT_PATH)).strip() or TAK_CLIENT_CERT_PATH
+        client_key = str(tak.get("client_key", TAK_CLIENT_KEY_PATH)).strip() or TAK_CLIENT_KEY_PATH
+        return {
+            "ca_cert": {"path": ca_cert, "present": os.path.exists(ca_cert), "name": os.path.basename(ca_cert)},
+            "client_cert": {"path": client_cert, "present": os.path.exists(client_cert), "name": os.path.basename(client_cert)},
+            "client_key": {"path": client_key, "present": os.path.exists(client_key), "name": os.path.basename(client_key)},
+        }
+
+    def _build_message_targets(self) -> Dict[str, Any]:
+        channels = []
+        for channel in self.mesh.get_channels():
+            idx = int(channel.get("index", 0) or 0)
+            name = str(channel.get("name", "")).strip() or ("Default Channel" if idx == 0 else f"Channel {idx}")
+            role = str(channel.get("role", "")).strip() or ("PRIMARY" if idx == 0 else "SECONDARY")
+            label = f"Broadcast — {name}"
+            channels.append({
+                "value": f"channel:{idx}",
+                "type": "channel",
+                "channel_index": idx,
+                "channel_name": name,
+                "label": label,
+                "role": role,
+                "is_default": idx == 0,
+            })
+
+        nodes = []
+        for node in self.mesh.store.get_nodes():
+            short_name = str(node.get("short_name") or "").strip()
+            display_name = str(node.get("display_name") or node.get("long_name") or node.get("node_id") or "").strip()
+            node_id = str(node.get("node_id") or "").strip()
+            if not node_id:
+                continue
+            label = short_name or display_name or node_id
+            if short_name and display_name and short_name != display_name:
+                label = f"{short_name} — {display_name}"
+            nodes.append({
+                "value": f"node:{node_id}",
+                "type": "node",
+                "node_id": node_id,
+                "label": label,
+                "short_name": short_name,
+                "display_name": display_name,
+                "last_heard": node.get("last_heard"),
+            })
+
+        nodes.sort(key=lambda item: ((item.get("short_name") or item.get("display_name") or item.get("node_id") or "").lower(), -(item.get("last_heard") or 0)))
+        channels.sort(key=lambda item: (0 if item.get("is_default") else 1, item.get("channel_index") or 0, item.get("label") or ""))
+        return {"channels": channels, "nodes": nodes}
+
+    def _save_uploaded_file(self, field_name: str, destination: str) -> Optional[str]:
+        upload = request.files.get(field_name)
+        if upload is None or not getattr(upload, "filename", ""):
+            return None
+
+        filename = secure_filename(upload.filename)
+        if not filename:
+            raise ValueError(f"Invalid filename for {field_name}")
+
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        tmp_path = f"{destination}.upload"
+        upload.save(tmp_path)
+        os.replace(tmp_path, destination)
+        return destination
 
     def _register_routes(self) -> None:
         app = self.app
@@ -227,7 +304,18 @@ class MeshTAKWebUI:
                 tak["enabled"] = _boolify(tak.get("enabled", False))
                 tak["host"] = str(tak.get("host", "")).strip()
                 tak["port"] = int(tak.get("port", 8088) or 8088)
+                tak["protocol"] = str(tak.get("protocol", "udp")).strip().lower() or "udp"
+                if tak["protocol"] not in {"udp", "tcp"}:
+                    return jsonify({"ok": False, "error": "tak.protocol must be udp or tcp"}), 400
                 tak["tls"] = _boolify(tak.get("tls", False))
+                tak["verify_server"] = _boolify(tak.get("verify_server", False))
+                tak["ca_cert"] = str(tak.get("ca_cert", TAK_CA_CERT_PATH)).strip() or TAK_CA_CERT_PATH
+                tak["client_cert"] = str(tak.get("client_cert", TAK_CLIENT_CERT_PATH)).strip() or TAK_CLIENT_CERT_PATH
+                tak["client_key"] = str(tak.get("client_key", TAK_CLIENT_KEY_PATH)).strip() or TAK_CLIENT_KEY_PATH
+
+                if tak["protocol"] == "udp":
+                    tak["tls"] = False
+                    tak["verify_server"] = False
 
                 web["host"] = str(web.get("host", "0.0.0.0")).strip() or "0.0.0.0"
                 web["port"] = int(web.get("port", 8443) or 8443)
@@ -245,6 +333,42 @@ class MeshTAKWebUI:
                     "config": self._config_view(self.mesh.get_config()),
                 }
             )
+
+        @app.post("/api/tak/certs")
+        def api_upload_tak_certs():
+            with self._config_lock:
+                current = self._load_config_from_disk()
+                tak = current.setdefault("tak", {})
+
+                updated = []
+                saved_ca = self._save_uploaded_file("ca_cert", str(tak.get("ca_cert", TAK_CA_CERT_PATH)).strip() or TAK_CA_CERT_PATH)
+                if saved_ca:
+                    tak["ca_cert"] = saved_ca
+                    updated.append("CA cert")
+
+                saved_client_cert = self._save_uploaded_file("client_cert", str(tak.get("client_cert", TAK_CLIENT_CERT_PATH)).strip() or TAK_CLIENT_CERT_PATH)
+                if saved_client_cert:
+                    tak["client_cert"] = saved_client_cert
+                    updated.append("Client cert")
+
+                saved_client_key = self._save_uploaded_file("client_key", str(tak.get("client_key", TAK_CLIENT_KEY_PATH)).strip() or TAK_CLIENT_KEY_PATH)
+                if saved_client_key:
+                    tak["client_key"] = saved_client_key
+                    updated.append("Client key")
+
+                if not updated:
+                    return jsonify({"ok": False, "error": "No certificate files were uploaded"}), 400
+
+                self._save_config_to_disk(current)
+                self.mesh.reload_config()
+
+            log.info("Updated TAK TLS files via Web UI: %s", ", ".join(updated))
+            return jsonify({"ok": True, "message": ", ".join(updated) + " uploaded", "config": self._config_view(self.mesh.get_config())})
+
+        @app.get("/api/message-targets")
+        def api_message_targets():
+            targets = self._build_message_targets()
+            return jsonify({"ok": True, **targets, "updated_at": int(time.time())})
 
         @app.get("/api/nodes")
         def api_nodes():
@@ -277,11 +401,13 @@ class MeshTAKWebUI:
             payload = request.get_json(silent=True) or {}
             text = str(payload.get("text", "")).strip()
             destination = str(payload.get("to", "")).strip() or None
+            channel_index = payload.get("channel_index")
+            channel_name = str(payload.get("channel_name", "")).strip() or None
 
             if not text:
                 return jsonify({"ok": False, "error": "Message text is required"}), 400
 
-            self.mesh.queue_tx(text=text, to=destination)
+            self.mesh.queue_tx(text=text, to=destination, channel_index=channel_index, channel_name=channel_name)
 
             return jsonify(
                 {
@@ -290,6 +416,8 @@ class MeshTAKWebUI:
                     "queued": {
                         "text": text,
                         "to": destination,
+                        "channel_index": channel_index,
+                        "channel_name": channel_name,
                     },
                 }
             )
