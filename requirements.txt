@@ -1,0 +1,6 @@
+Flask>=3.0,<4
+meshtastic>=2.2
+pypubsub>=4.0
+protobuf>=4,<5
+pyserial>=3.5
+requests>=2.31

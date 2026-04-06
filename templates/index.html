@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MeshTAK</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    crossorigin=""
+  >
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1>MeshTAK</h1>
+        <div class="subtitle">Meshtastic → TAK bridge with integrated HTTPS Web UI</div>
+      </div>
+      <div class="topbar-right">
+        <span id="status-badge" class="badge muted">Loading</span>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section class="panel panel-summary">
+        <div class="panel-header">
+          <h2>System Status</h2>
+        </div>
+        <div class="summary-grid">
+          <div class="summary-card">
+            <div class="summary-label">Connection</div>
+            <div id="connection-summary" class="summary-value">—</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">TAK</div>
+            <div id="tak-summary" class="summary-value">—</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Nodes</div>
+            <div id="stats-nodes" class="summary-value">0</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Online</div>
+            <div id="stats-online" class="summary-value">0</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Positions</div>
+            <div id="stats-positions" class="summary-value">0</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Messages</div>
+            <div id="stats-messages" class="summary-value">0</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">TAK Queue</div>
+            <div id="stats-queue" class="summary-value">0</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel panel-map">
+        <div class="panel-header">
+          <h2>Map</h2>
+        </div>
+        <div id="map" class="map-frame"></div>
+      </section>
+
+      <section class="panel panel-config">
+        <div class="panel-header">
+          <h2>Configuration</h2>
+        </div>
+
+        <form id="config-form" class="form-grid">
+          <div class="form-row">
+            <label for="config-connection-type">Connection Type</label>
+            <select id="config-connection-type" name="connection_type">
+              <option value="serial">Serial</option>
+              <option value="tcp">TCP</option>
+            </select>
+          </div>
+
+          <div id="config-serial-row" class="form-row">
+            <label for="config-port">Serial Port</label>
+            <input id="config-port" name="port" type="text" placeholder="/dev/ttyACM0">
+          </div>
+
+          <div id="config-tcp-row" class="form-row">
+            <label for="config-host">TCP Host</label>
+            <input id="config-host" name="host" type="text" placeholder="192.168.1.50">
+          </div>
+
+          <div class="form-row form-row-checkbox">
+            <label for="config-tak-enabled">Enable TAK Forwarding</label>
+            <input id="config-tak-enabled" name="tak_enabled" type="checkbox">
+          </div>
+
+          <div class="form-row">
+            <label for="config-tak-host">TAK Host</label>
+            <input id="config-tak-host" name="tak_host" type="text" placeholder="takserver.local">
+          </div>
+
+          <div class="form-row">
+            <label for="config-tak-port">TAK Port</label>
+            <input id="config-tak-port" name="tak_port" type="number" min="1" max="65535" placeholder="8088">
+          </div>
+
+          <div class="form-row form-row-checkbox">
+            <label for="config-tak-tls">Use TLS for TAK</label>
+            <input id="config-tak-tls" name="tak_tls" type="checkbox">
+          </div>
+
+          <div class="form-actions">
+            <button id="config-save-btn" type="submit" class="btn btn-primary">Save Config</button>
+            <button id="config-reset-btn" type="button" class="btn btn-secondary">Reload</button>
+            <div id="config-status" class="form-status">Idle</div>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel panel-messages">
+        <div class="panel-header">
+          <h2>Messaging</h2>
+        </div>
+
+        <form id="message-form" class="message-form">
+          <div class="form-row">
+            <label for="message-text">Message</label>
+            <textarea id="message-text" name="message_text" rows="3" placeholder="Enter message text"></textarea>
+          </div>
+
+          <div class="form-row">
+            <label for="message-to">Destination Node ID (blank = broadcast)</label>
+            <input id="message-to" name="message_to" type="text" placeholder="!abcd1234">
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Send</button>
+            <button id="refresh-messages-btn" type="button" class="btn btn-secondary">Refresh</button>
+            <div id="message-status" class="form-status">Idle</div>
+          </div>
+        </form>
+
+        <div id="messages-list" class="messages-list">
+          <div class="empty-state">Loading messages…</div>
+        </div>
+      </section>
+
+      <section class="panel panel-nodes">
+        <div class="panel-header">
+          <h2>Nodes</h2>
+          <button id="refresh-nodes-btn" type="button" class="btn btn-secondary btn-small">Refresh</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="nodes-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Node ID</th>
+                <th>Short</th>
+                <th>Latitude</th>
+                <th>Longitude</th>
+                <th>Battery</th>
+                <th>SNR</th>
+                <th>Status</th>
+                <th>Last Heard</th>
+              </tr>
+            </thead>
+            <tbody id="nodes-table-body">
+              <tr>
+                <td colspan="9" class="empty-state">Loading nodes…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    crossorigin=""
+  ></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
