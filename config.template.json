@@ -1,15 +1,35 @@
 {
   "connection": {
     "type": "serial",
-    "serial_device": "/dev/ttyACM0",
-    "ip": "192.168.1.100",
-    "port": 4403
+    "port": "/dev/ttyACM0",
+    "host": ""
   },
   "tak": {
+    "enabled": false,
     "host": "127.0.0.1",
-    "port": 8087
+    "port": 8088,
+    "protocol": "tcp",
+    "tls": false,
+    "ca_cert": "",
+    "client_cert": "",
+    "client_key": ""
   },
-  "logging": {
-    "file": "/var/log/meshtak.log"
+  "web": {
+    "host": "0.0.0.0",
+    "port": 9443,
+    "tls_cert": "/opt/meshtak/certs/meshtak.crt",
+    "tls_key": "/opt/meshtak/certs/meshtak.key"
+  },
+  "channels": [
+    {
+      "name": "Broadcast",
+      "index": 0,
+      "pinned": true
+    }
+  ],
+  "cot": {
+    "type": "a-f-G-U-C",
+    "team": "Orange",
+    "role": "RTO"
   }
 }

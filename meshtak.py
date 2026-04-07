@@ -564,7 +564,12 @@ class MeshTAK:
                 else:
                     sock = socket.create_connection((host, port), timeout=5)
                     if use_tls:
-                        context = ssl.create_default_context()
+                        cafile = str(tak_cfg.get("ca_cert", "")).strip() or None
+                        certfile = str(tak_cfg.get("client_cert", "")).strip() or None
+                        keyfile = str(tak_cfg.get("client_key", "")).strip() or None
+                        context = ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
+                        if certfile and keyfile:
+                            context.load_cert_chain(certfile=certfile, keyfile=keyfile)
                         sock = context.wrap_socket(sock, server_hostname=host)
                     sock.sendall(payload)
                     sock.close()
@@ -586,16 +591,16 @@ class MeshTAK:
                 self.store.requeue_failed(item, str(exc))
                 time.sleep(2)
 
-    def queue_tx(self, text: str, to: Optional[str] = None) -> None:
+    def queue_tx(self, text: str, to: Optional[str] = None, channel_index: Optional[int] = None, channel_name: Optional[str] = None) -> None:
         try:
-            self.send_message(text=text, to=to)
-            log.info("TX sent immediately to=%s text=%s", to or "broadcast", text)
+            self.send_message(text=text, to=to, channel_index=channel_index, channel_name=channel_name)
+            log.info("TX sent immediately to=%s channel=%s text=%s", to or "broadcast", channel_name or channel_index or "default", text)
             return
         except Exception as exc:
-            log.warning("Immediate TX failed, queueing retry to=%s error=%s", to or "broadcast", exc)
+            log.warning("Immediate TX failed, queueing retry to=%s channel=%s error=%s", to or "broadcast", channel_name or channel_index or "default", exc)
 
-        self.tx_queue.put({"text": text, "to": to})
-        log.info("TX queued for retry to=%s text=%s", to or "broadcast", text)
+        self.tx_queue.put({"text": text, "to": to, "channel_index": channel_index, "channel_name": channel_name})
+        log.info("TX queued for retry to=%s channel=%s text=%s", to or "broadcast", channel_name or channel_index or "default", text)
 
     def tx_worker(self) -> None:
         while self.running:
@@ -607,7 +612,7 @@ class MeshTAK:
             time.sleep(0.5)
 
             try:
-                self.send_message(msg.get("text", ""), msg.get("to"))
+                self.send_message(msg.get("text", ""), msg.get("to"), msg.get("channel_index"), msg.get("channel_name"))
             except Exception as exc:
                 failed_to = self._normalize_node_id(msg.get("to"))
                 log.error("TX worker send failed to=%s error=%s", failed_to or "broadcast", exc)
@@ -623,7 +628,7 @@ class MeshTAK:
                     raw={"status": "failed", "error": str(exc)},
                 )
 
-    def send_message(self, text: str, to: Optional[str] = None) -> None:
+    def send_message(self, text: str, to: Optional[str] = None, channel_index: Optional[int] = None, channel_name: Optional[str] = None) -> None:
         if not self.interface:
             raise RuntimeError("Meshtastic interface is not connected")
 
@@ -633,15 +638,25 @@ class MeshTAK:
 
         destination = self._normalize_node_id(to)
 
+        if channel_index is not None:
+            try:
+                channel_index = int(channel_index)
+            except Exception:
+                channel_index = None
+
         with self.radio_lock:
             self._pause_radio_maintenance(4.0)
 
+            kwargs = {}
+            if channel_index is not None:
+                kwargs["channelIndex"] = channel_index
+
             if destination:
-                log.info("TX PRIORITY direct to=%s text=%s", destination, text)
-                sent_packet = self.interface.sendText(text, destinationId=destination)
+                log.info("TX PRIORITY direct to=%s channel=%s text=%s", destination, channel_name or channel_index or "default", text)
+                sent_packet = self.interface.sendText(text, destinationId=destination, **kwargs)
             else:
-                log.info("TX PRIORITY broadcast text=%s", text)
-                sent_packet = self.interface.sendText(text)
+                log.info("TX PRIORITY broadcast channel=%s text=%s", channel_name or channel_index or "default", text)
+                sent_packet = self.interface.sendText(text, **kwargs)
 
             self.store.add_message(
                 direction="tx",
@@ -649,12 +664,13 @@ class MeshTAK:
                 to_id=destination,
                 from_id="self",
                 from_name="MeshTAK",
-                to_name=destination or "Broadcast",
+                to_name=destination or (channel_name or "Broadcast"),
+                channel=channel_name or (f"ch{channel_index}" if channel_index is not None else ""),
                 rx_timestamp=int(time.time()),
-                raw={"status": "sent", "packet": sent_packet},
+                raw={"status": "sent", "packet": sent_packet, "channel_index": channel_index, "channel_name": channel_name},
             )
 
-            log.info("TX sent to radio to=%s text=%s", destination or "broadcast", text)
+            log.info("TX sent to radio to=%s channel=%s text=%s", destination or "broadcast", channel_name or channel_index or "default", text)
 
 
 if __name__ == "__main__":

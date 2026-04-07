@@ -4,3 +4,4 @@ pypubsub>=4.0
 protobuf>=4,<5
 pyserial>=3.5
 requests>=2.31
+

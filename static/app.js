@@ -4,19 +4,18 @@
   const state = {
     map: null,
     markers: new Map(),
+    initialMapFitDone: false,
     configDirty: false,
     lastConfigJson: "",
-    initialMapFitDone: false,
-    polling: {
-      status: null,
-      nodes: null,
-      messages: null,
-      map: null,
-    },
+    targets: [],
   };
 
   const els = {
     statusBadge: document.getElementById("status-badge"),
+    settingsToggle: document.getElementById("settings-toggle"),
+    settingsDrawer: document.getElementById("settings-drawer"),
+    settingsClose: document.getElementById("settings-close"),
+
     connectionSummary: document.getElementById("connection-summary"),
     takSummary: document.getElementById("tak-summary"),
     statsNodes: document.getElementById("stats-nodes"),
@@ -34,34 +33,27 @@
     configTakEnabled: document.getElementById("config-tak-enabled"),
     configTakHost: document.getElementById("config-tak-host"),
     configTakPort: document.getElementById("config-tak-port"),
+    configTakProtocol: document.getElementById("config-tak-protocol"),
     configTakTls: document.getElementById("config-tak-tls"),
+    configChannelsJson: document.getElementById("config-channels-json"),
     configSaveBtn: document.getElementById("config-save-btn"),
     configResetBtn: document.getElementById("config-reset-btn"),
     configStatus: document.getElementById("config-status"),
+    takCertFields: document.getElementById("tak-cert-fields"),
+    takCaCert: document.getElementById("tak-ca-cert"),
+    takClientCert: document.getElementById("tak-client-cert"),
+    takClientKey: document.getElementById("tak-client-key"),
+    takCertStatus: document.getElementById("tak-cert-status"),
 
-    nodesTableBody: document.getElementById("nodes-table-body"),
-    messagesList: document.getElementById("messages-list"),
     messageForm: document.getElementById("message-form"),
+    messageTarget: document.getElementById("message-target"),
     messageText: document.getElementById("message-text"),
-    messageTo: document.getElementById("message-to"),
     messageStatus: document.getElementById("message-status"),
+    messagesList: document.getElementById("messages-list"),
     refreshMessagesBtn: document.getElementById("refresh-messages-btn"),
     refreshNodesBtn: document.getElementById("refresh-nodes-btn"),
+    nodesTableBody: document.getElementById("nodes-table-body"),
   };
-
-  function setText(el, value) {
-    if (el) el.textContent = value;
-  }
-
-  function setHtml(el, value) {
-    if (el) el.innerHTML = value;
-  }
-
-  function setBadge(el, text, className) {
-    if (!el) return;
-    el.textContent = text;
-    el.className = `badge ${className || ""}`.trim();
-  }
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -73,77 +65,92 @@
   }
 
   function safeValue(value, fallback = "") {
-    if (value === null || value === undefined) return fallback;
-    return String(value);
+    return value === null || value === undefined ? fallback : String(value);
+  }
+
+  function setText(el, value) {
+    if (el) el.textContent = value;
+  }
+
+  function setBadge(text, cls) {
+    if (!els.statusBadge) return;
+    els.statusBadge.textContent = text;
+    els.statusBadge.className = `badge ${cls || "muted"}`.trim();
+  }
+
+  function formatCoord(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num.toFixed(6) : "—";
   }
 
   function formatEpoch(epoch) {
     if (!epoch) return "—";
     const d = new Date(Number(epoch) * 1000);
-    if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleString();
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
   }
 
   function formatRelativeEpoch(epoch) {
     if (!epoch) return "—";
-    const now = Math.floor(Date.now() / 1000);
-    const diff = Math.max(0, now - Number(epoch));
-    if (diff < 5) return "just now";
+    const diff = Math.max(0, Math.floor(Date.now() / 1000) - Number(epoch));
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return `${Math.floor(diff / 86400)}d ago`;
   }
 
-  function formatCoord(value) {
-    if (value === null || value === undefined || value === "") return "—";
-    const num = Number(value);
-    if (Number.isNaN(num)) return "—";
-    return num.toFixed(6);
-  }
-
   function isNodeOnline(node) {
     const lastHeard = Number(node.last_heard || 0);
-    const now = Math.floor(Date.now() / 1000);
-    return lastHeard > 0 && now - lastHeard <= 300;
+    return lastHeard > 0 && (Math.floor(Date.now() / 1000) - lastHeard) <= 300;
   }
 
   async function apiGet(url) {
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      throw new Error(`GET ${url} failed (${res.status})`);
-    }
-    return await res.json();
+    const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `${url} failed (${res.status})`);
+    return data;
   }
 
   async function apiPost(url, payload) {
     const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(payload),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `POST ${url} failed (${res.status})`);
-    }
+    if (!res.ok || data.ok === false) throw new Error(data.error || `${url} failed (${res.status})`);
     return data;
+  }
+
+  async function apiPostForm(url, formData) {
+    const res = await fetch(url, { method: "POST", body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `${url} failed (${res.status})`);
+    return data;
+  }
+
+  function toggleDrawer(forceOpen = null) {
+    if (!els.settingsDrawer) return;
+    const open = forceOpen === null ? els.settingsDrawer.classList.contains("hidden") : !!forceOpen;
+    els.settingsDrawer.classList.toggle("hidden", !open);
   }
 
   function toggleConnectionRows() {
     const type = els.configConnectionType?.value || "serial";
-    if (els.configSerialRow) {
-      els.configSerialRow.style.display = type === "serial" ? "" : "none";
-    }
-    if (els.configTcpRow) {
-      els.configTcpRow.style.display = type === "tcp" ? "" : "none";
-    }
+    if (els.configSerialRow) els.configSerialRow.style.display = type === "serial" ? "" : "none";
+    if (els.configTcpRow) els.configTcpRow.style.display = type === "tcp" ? "" : "none";
+  }
+
+  function toggleTakCertFields() {
+    const visible = !!els.configTakTls?.checked;
+    if (els.takCertFields) els.takCertFields.style.display = visible ? "grid" : "none";
+  }
+
+  function parseChannelsJson() {
+    const raw = safeValue(els.configChannelsJson?.value).trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("Channels JSON must be an array");
+    return parsed;
   }
 
   function serializeConfigForm() {
@@ -157,29 +164,30 @@
         enabled: !!els.configTakEnabled?.checked,
         host: safeValue(els.configTakHost?.value).trim(),
         port: Number(els.configTakPort?.value || 8088),
+        protocol: safeValue(els.configTakProtocol?.value || "tcp").trim().toLowerCase(),
         tls: !!els.configTakTls?.checked,
       },
+      channels: parseChannelsJson(),
     };
   }
 
-  function configPayloadJson() {
-    return JSON.stringify(serializeConfigForm());
-  }
-
   function markConfigDirty() {
-    const current = configPayloadJson();
-    state.configDirty = current !== state.lastConfigJson;
-    if (els.configSaveBtn) {
-      els.configSaveBtn.disabled = false;
-    }
-    if (els.configStatus && state.configDirty) {
-      els.configStatus.textContent = "Unsaved changes";
-      els.configStatus.className = "form-status dirty";
+    try {
+      state.configDirty = JSON.stringify(serializeConfigForm()) !== state.lastConfigJson;
+      if (els.configStatus && state.configDirty) {
+        els.configStatus.textContent = "Unsaved changes";
+        els.configStatus.className = "form-status dirty";
+      }
+    } catch (err) {
+      if (els.configStatus) {
+        els.configStatus.textContent = err.message || "Invalid JSON";
+        els.configStatus.className = "form-status error";
+      }
     }
   }
 
-  function clearConfigDirty(message = "Saved") {
-    state.lastConfigJson = configPayloadJson();
+  function clearConfigDirty(message = "Loaded") {
+    state.lastConfigJson = JSON.stringify(serializeConfigForm());
     state.configDirty = false;
     if (els.configStatus) {
       els.configStatus.textContent = message;
@@ -189,171 +197,93 @@
 
   function applyConfig(config) {
     if (!config) return;
-
-    if (els.configConnectionType) {
-      els.configConnectionType.value = safeValue(config.connection?.type || "serial");
-    }
-    if (els.configPort) {
-      els.configPort.value = safeValue(config.connection?.port || "");
-    }
-    if (els.configHost) {
-      els.configHost.value = safeValue(config.connection?.host || "");
-    }
-    if (els.configTakEnabled) {
-      els.configTakEnabled.checked = !!config.tak?.enabled;
-    }
-    if (els.configTakHost) {
-      els.configTakHost.value = safeValue(config.tak?.host || "");
-    }
-    if (els.configTakPort) {
-      els.configTakPort.value = safeValue(config.tak?.port || 8088);
-    }
-    if (els.configTakTls) {
-      els.configTakTls.checked = !!config.tak?.tls;
-    }
-
+    els.configConnectionType.value = safeValue(config.connection?.type || "serial");
+    els.configPort.value = safeValue(config.connection?.port || "");
+    els.configHost.value = safeValue(config.connection?.host || "");
+    els.configTakEnabled.checked = !!config.tak?.enabled;
+    els.configTakHost.value = safeValue(config.tak?.host || "");
+    els.configTakPort.value = safeValue(config.tak?.port || 8088);
+    els.configTakProtocol.value = safeValue(config.tak?.protocol || "tcp");
+    els.configTakTls.checked = !!config.tak?.tls;
+    els.configChannelsJson.value = JSON.stringify(config.channels || [], null, 2);
     toggleConnectionRows();
+    toggleTakCertFields();
     clearConfigDirty("Loaded");
-  }
-
-  async function loadConfig({ force = false } = {}) {
-    if (state.configDirty && !force) {
-      return;
-    }
-    const data = await apiGet("/api/config");
-    applyConfig(data);
   }
 
   function renderStatus(data) {
     const connected = !!data.connected;
-    const takEnabled = !!data.tak_enabled;
-    const stats = data.stats || {};
+    setBadge(connected ? "Connected" : "Disconnected", connected ? "success" : "danger");
+    setText(els.connectionSummary, `${safeValue(data.connection_type || "unknown").toUpperCase()} link`);
+    setText(els.takSummary, data.tak_enabled ? `${safeValue(data.tak_protocol || "tcp").toUpperCase()} enabled` : "Disabled");
+    setText(els.statsNodes, String(data.stats?.node_count ?? 0));
+    setText(els.statsOnline, String(data.stats?.online_count ?? 0));
+    setText(els.statsPositions, String(data.stats?.position_count ?? 0));
+    setText(els.statsMessages, String(data.stats?.message_count ?? 0));
+    setText(els.statsQueue, String(data.stats?.queue_count ?? 0));
+  }
 
-    setBadge(
-      els.statusBadge,
-      connected ? "Connected" : "Disconnected",
-      connected ? "success" : "danger"
-    );
+  function renderTargets(targets) {
+    state.targets = targets || [];
+    if (!els.messageTarget) return;
+    const html = state.targets.map((t, idx) => {
+      const label = t.kind === "node" ? `${t.label} • ${t.to}` : t.label;
+      return `<option value="${idx}">${escapeHtml(label)}</option>`;
+    }).join("");
+    els.messageTarget.innerHTML = html || `<option value="">Broadcast</option>`;
+  }
 
-    setText(
-      els.connectionSummary,
-      `${safeValue(data.connection_type || "unknown").toUpperCase()} connection`
-    );
-
-    setText(
-      els.takSummary,
-      takEnabled
-        ? `TAK enabled • queue ${stats.queue_count ?? 0}`
-        : "TAK disabled"
-    );
-
-    setText(els.statsNodes, String(stats.node_count ?? 0));
-    setText(els.statsOnline, String(stats.online_count ?? 0));
-    setText(els.statsPositions, String(stats.position_count ?? 0));
-    setText(els.statsMessages, String(stats.message_count ?? 0));
-    setText(els.statsQueue, String(stats.queue_count ?? 0));
+  function selectedTarget() {
+    const idx = Number(els.messageTarget?.value || 0);
+    return state.targets[idx] || { kind: "broadcast", to: null, channel_index: 0, channel_name: "Broadcast" };
   }
 
   function renderNodes(nodes) {
     if (!els.nodesTableBody) return;
-
-    if (!nodes || nodes.length === 0) {
-      setHtml(
-        els.nodesTableBody,
-        `<tr><td colspan="9" class="empty-state">No nodes seen yet.</td></tr>`
-      );
+    if (!nodes?.length) {
+      els.nodesTableBody.innerHTML = `<tr><td colspan="9" class="empty-state">No nodes yet</td></tr>`;
       return;
     }
-
-    const rows = nodes.map((node) => {
+    els.nodesTableBody.innerHTML = nodes.map((node) => {
       const online = isNodeOnline(node);
-      const statusClass = online ? "success" : "muted";
-      const statusText = online ? "Online" : "Offline";
       return `
         <tr>
-          <td>
-            <div class="node-name">${escapeHtml(node.display_name || node.node_id || "Unknown")}</div>
-            <div class="node-subtle">${escapeHtml(node.long_name || "")}</div>
-          </td>
+          <td><div class="node-name">${escapeHtml(node.display_name || node.short_name || node.long_name || node.node_id || "Unknown")}</div></td>
           <td><code>${escapeHtml(node.node_id || "")}</code></td>
           <td>${escapeHtml(node.short_name || "—")}</td>
-          <td>${formatCoord(node.lat)}</td>
-          <td>${formatCoord(node.lon)}</td>
-          <td>${node.batt ?? "—"}</td>
-          <td>${node.snr ?? "—"}</td>
-          <td><span class="pill ${statusClass}">${statusText}</span></td>
+          <td>${escapeHtml(formatCoord(node.lat))}</td>
+          <td>${escapeHtml(formatCoord(node.lon))}</td>
+          <td>${escapeHtml(node.batt ?? "—")}</td>
+          <td>${escapeHtml(node.snr ?? "—")}</td>
+          <td><span class="pill ${online ? "success" : "muted"}">${online ? "Online" : "Stale"}</span></td>
           <td title="${escapeHtml(formatEpoch(node.last_heard))}">${escapeHtml(formatRelativeEpoch(node.last_heard))}</td>
-        </tr>
-      `;
-    });
-
-    setHtml(els.nodesTableBody, rows.join(""));
-  }
-
-  function messageTargetLabel(msg) {
-    const toName = safeValue(msg.to_name).trim();
-    const toId = safeValue(msg.to_id).trim();
-    if (!toName && !toId) return "Broadcast";
-    return toName || toId;
-  }
-
-  function messageSourceLabel(msg) {
-    const fromName = safeValue(msg.from_name).trim();
-    const fromId = safeValue(msg.from_id).trim();
-    return fromName || fromId || "Unknown";
+        </tr>`;
+    }).join("");
   }
 
   function renderMessages(messages) {
     if (!els.messagesList) return;
-
-    if (!messages || messages.length === 0) {
-      setHtml(
-        els.messagesList,
-        `<div class="empty-state">No messages yet.</div>`
-      );
+    if (!messages?.length) {
+      els.messagesList.innerHTML = `<div class="empty-state">No messages yet</div>`;
       return;
     }
-
-    const html = messages
-      .slice()
-      .reverse()
-      .map((msg) => {
-        const isRx = msg.direction === "rx";
-        const directionClass = isRx ? "rx" : "tx";
-        const directionText = isRx ? "RX" : "TX";
-        const source = messageSourceLabel(msg);
-        const target = messageTargetLabel(msg);
-        const meta = isRx
-          ? `From ${escapeHtml(source)} → ${escapeHtml(target)}`
-          : `To ${escapeHtml(target)}`;
-
-        return `
-          <div class="message-card ${directionClass}">
-            <div class="message-header">
-              <span class="pill ${directionClass}">${directionText}</span>
-              <span class="message-meta">${meta}</span>
-              <span class="message-time" title="${escapeHtml(formatEpoch(msg.timestamp))}">${escapeHtml(formatRelativeEpoch(msg.timestamp))}</span>
-            </div>
-            <div class="message-body">${escapeHtml(msg.text || "")}</div>
-            <div class="message-subtle">
-              ${escapeHtml(source)}
-              ${msg.channel ? `• Channel ${escapeHtml(msg.channel)}` : ""}
-            </div>
-          </div>
-        `;
-      })
-      .join("");
-
-    setHtml(els.messagesList, html);
+    els.messagesList.innerHTML = messages.map((msg) => `
+      <div class="message-card ${escapeHtml(msg.direction || "")}">
+        <div class="message-header">
+          <span class="pill ${msg.direction === "rx" ? "rx" : "tx"}">${escapeHtml((msg.direction || "?").toUpperCase())}</span>
+          <strong>${escapeHtml(msg.from_name || msg.from_id || "Unknown")}</strong>
+          <span class="message-meta">→ ${escapeHtml(msg.to_name || msg.to_id || "Broadcast")}</span>
+          <span class="message-meta">${escapeHtml(msg.channel || "")}</span>
+          <span class="message-time">${escapeHtml(formatEpoch(msg.timestamp || msg.created_at))}</span>
+        </div>
+        <div class="message-body">${escapeHtml(msg.text || "")}</div>
+      </div>`).join("");
   }
 
   function initMap() {
-    if (!window.L) return;
     const mapEl = document.getElementById("map");
-    if (!mapEl) return;
-
+    if (!mapEl || !window.L) return;
     state.map = L.map(mapEl).setView([32.0, -83.0], 6);
-
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap contributors",
@@ -363,31 +293,25 @@
   function markerPopup(node) {
     return `
       <div class="map-popup">
-        <div class="map-popup-title">${escapeHtml(node.display_name || node.node_id || "Unknown")}</div>
+        <div class="map-popup-title">${escapeHtml(node.display_name || node.short_name || node.node_id || "Unknown")}</div>
         <div><code>${escapeHtml(node.node_id || "")}</code></div>
         <div>Lat: ${escapeHtml(formatCoord(node.lat))}</div>
         <div>Lon: ${escapeHtml(formatCoord(node.lon))}</div>
-        <div>Alt: ${escapeHtml(node.alt ?? "—")}</div>
         <div>Battery: ${escapeHtml(node.batt ?? "—")}</div>
         <div>Last heard: ${escapeHtml(formatRelativeEpoch(node.last_heard))}</div>
-      </div>
-    `;
+      </div>`;
   }
 
   function renderMap(nodes) {
     if (!state.map || !window.L) return;
-
     const seen = new Set();
     const bounds = [];
-
     (nodes || []).forEach((node) => {
       const lat = Number(node.lat);
       const lon = Number(node.lon);
-      if (Number.isNaN(lat) || Number.isNaN(lon)) return;
-
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
       seen.add(node.node_id);
       bounds.push([lat, lon]);
-
       const existing = state.markers.get(node.node_id);
       if (existing) {
         existing.setLatLng([lat, lon]);
@@ -399,202 +323,116 @@
         state.markers.set(node.node_id, marker);
       }
     });
-
     for (const [nodeId, marker] of state.markers.entries()) {
       if (!seen.has(nodeId)) {
         state.map.removeLayer(marker);
         state.markers.delete(nodeId);
       }
     }
-
-    if (!state.initialMapFitDone && bounds.length > 0) {
+    if (!state.initialMapFitDone && bounds.length) {
       state.map.fitBounds(bounds, { padding: [20, 20] });
       state.initialMapFitDone = true;
     }
   }
 
-  async function refreshStatus() {
-    const data = await apiGet("/api/status");
-    renderStatus(data);
+  async function refreshStatus() { renderStatus(await apiGet("/api/status")); }
+  async function refreshNodes() { renderNodes((await apiGet("/api/nodes")).nodes || []); }
+  async function refreshMessages() { renderMessages((await apiGet("/api/messages?limit=250")).messages || []); }
+  async function refreshMap() { renderMap((await apiGet("/api/map")).nodes || []); }
+  async function refreshTargets() { renderTargets((await apiGet("/api/message-targets")).targets || []); }
+  async function loadConfig(force = false) {
+    if (state.configDirty && !force) return;
+    applyConfig(await apiGet("/api/config"));
   }
 
-  async function refreshNodes() {
-    const data = await apiGet("/api/nodes");
-    renderNodes(data.nodes || []);
-  }
-
-  async function refreshMessages() {
-    const data = await apiGet("/api/messages?limit=250");
-    renderMessages(data.messages || []);
-  }
-
-  async function refreshMap() {
-    const data = await apiGet("/api/map");
-    renderMap(data.nodes || []);
-  }
-
-  async function sendMessage(evt) {
-    evt.preventDefault();
-    const text = safeValue(els.messageText?.value).trim();
-    const to = safeValue(els.messageTo?.value).trim();
-
-    if (!text) {
-      if (els.messageStatus) {
-        els.messageStatus.textContent = "Message text is required";
-        els.messageStatus.className = "form-status error";
-      }
-      return;
-    }
-
-    if (els.messageStatus) {
-      els.messageStatus.textContent = "Sending...";
-      els.messageStatus.className = "form-status working";
-    }
-
-    try {
-      await apiPost("/api/messages/send", {
-        text,
-        to: to || null,
-      });
-
-      if (els.messageText) {
-        els.messageText.value = "";
-      }
-
-      if (els.messageStatus) {
-        els.messageStatus.textContent = "Queued";
-        els.messageStatus.className = "form-status clean";
-      }
-
-      await refreshMessages();
-      await refreshStatus();
-    } catch (err) {
-      if (els.messageStatus) {
-        els.messageStatus.textContent = err.message || "Send failed";
-        els.messageStatus.className = "form-status error";
-      }
-    }
+  async function uploadTakCerts() {
+    const formData = new FormData();
+    if (els.takCaCert?.files?.[0]) formData.append("ca_cert", els.takCaCert.files[0]);
+    if (els.takClientCert?.files?.[0]) formData.append("client_cert", els.takClientCert.files[0]);
+    if (els.takClientKey?.files?.[0]) formData.append("client_key", els.takClientKey.files[0]);
+    if (![...formData.keys()].length) return;
+    setText(els.takCertStatus, "Uploading certs...");
+    els.takCertStatus.className = "form-status working";
+    await apiPostForm("/api/tak-certs", formData);
+    setText(els.takCertStatus, "Certs uploaded");
+    els.takCertStatus.className = "form-status clean";
   }
 
   async function saveConfig(evt) {
     evt.preventDefault();
-
-    if (els.configStatus) {
+    try {
       els.configStatus.textContent = "Saving...";
       els.configStatus.className = "form-status working";
-    }
-
-    try {
       const payload = serializeConfigForm();
       const data = await apiPost("/api/config", payload);
+      await uploadTakCerts();
       applyConfig(data.config || payload);
-      if (els.configStatus) {
-        els.configStatus.textContent = "Saved";
-        els.configStatus.className = "form-status clean";
-      }
-      await refreshStatus();
+      await Promise.allSettled([refreshStatus(), refreshTargets()]);
+      els.configStatus.textContent = "Saved";
+      els.configStatus.className = "form-status clean";
     } catch (err) {
-      if (els.configStatus) {
-        els.configStatus.textContent = err.message || "Save failed";
-        els.configStatus.className = "form-status error";
-      }
+      els.configStatus.textContent = err.message || "Save failed";
+      els.configStatus.className = "form-status error";
     }
   }
 
-  async function resetConfig() {
+  async function sendMessage(evt) {
+    evt.preventDefault();
+    const target = selectedTarget();
+    const text = safeValue(els.messageText?.value).trim();
+    if (!text) {
+      els.messageStatus.textContent = "Message text is required";
+      els.messageStatus.className = "form-status error";
+      return;
+    }
     try {
-      await loadConfig({ force: true });
+      els.messageStatus.textContent = "Sending...";
+      els.messageStatus.className = "form-status working";
+      await apiPost("/api/messages/send", {
+        text,
+        to: target.to,
+        channel_index: target.channel_index,
+        channel_name: target.channel_name,
+      });
+      els.messageText.value = "";
+      els.messageStatus.textContent = "Queued";
+      els.messageStatus.className = "form-status clean";
+      await Promise.allSettled([refreshMessages(), refreshStatus()]);
     } catch (err) {
-      if (els.configStatus) {
-        els.configStatus.textContent = err.message || "Reload failed";
-        els.configStatus.className = "form-status error";
-      }
+      els.messageStatus.textContent = err.message || "Send failed";
+      els.messageStatus.className = "form-status error";
     }
   }
 
   function bindEvents() {
-    if (els.configConnectionType) {
-      els.configConnectionType.addEventListener("change", () => {
-        toggleConnectionRows();
-        markConfigDirty();
-      });
-    }
-
-    [
-      els.configPort,
-      els.configHost,
-      els.configTakHost,
-      els.configTakPort,
-      els.configTakEnabled,
-      els.configTakTls,
-    ].forEach((el) => {
-      if (!el) return;
-      el.addEventListener("input", markConfigDirty);
-      el.addEventListener("change", markConfigDirty);
+    els.settingsToggle?.addEventListener("click", () => toggleDrawer());
+    els.settingsClose?.addEventListener("click", () => toggleDrawer(false));
+    els.configConnectionType?.addEventListener("change", () => { toggleConnectionRows(); markConfigDirty(); });
+    els.configTakTls?.addEventListener("change", () => { toggleTakCertFields(); markConfigDirty(); });
+    [els.configPort, els.configHost, els.configTakEnabled, els.configTakHost, els.configTakPort, els.configTakProtocol, els.configChannelsJson].forEach((el) => {
+      el?.addEventListener("input", markConfigDirty);
+      el?.addEventListener("change", markConfigDirty);
     });
-
-    if (els.configForm) {
-      els.configForm.addEventListener("submit", saveConfig);
-    }
-
-    if (els.configResetBtn) {
-      els.configResetBtn.addEventListener("click", resetConfig);
-    }
-
-    if (els.messageForm) {
-      els.messageForm.addEventListener("submit", sendMessage);
-    }
-
-    if (els.refreshMessagesBtn) {
-      els.refreshMessagesBtn.addEventListener("click", refreshMessages);
-    }
-
-    if (els.refreshNodesBtn) {
-      els.refreshNodesBtn.addEventListener("click", async () => {
-        await refreshNodes();
-        await refreshMap();
-      });
-    }
+    els.configForm?.addEventListener("submit", saveConfig);
+    els.configResetBtn?.addEventListener("click", () => loadConfig(true).catch(() => {}));
+    els.messageForm?.addEventListener("submit", sendMessage);
+    els.refreshMessagesBtn?.addEventListener("click", () => refreshMessages().catch(() => {}));
+    els.refreshNodesBtn?.addEventListener("click", async () => { await Promise.allSettled([refreshNodes(), refreshMap(), refreshTargets()]); });
   }
 
   function schedulePolling() {
-    state.polling.status = window.setInterval(() => {
-      refreshStatus().catch(() => {});
-    }, 3000);
-
-    state.polling.nodes = window.setInterval(() => {
-      refreshNodes().catch(() => {});
-    }, 5000);
-
-    state.polling.messages = window.setInterval(() => {
-      refreshMessages().catch(() => {});
-    }, 3000);
-
-    state.polling.map = window.setInterval(() => {
-      refreshMap().catch(() => {});
-    }, 5000);
+    window.setInterval(() => refreshStatus().catch(() => {}), 3000);
+    window.setInterval(() => refreshNodes().catch(() => {}), 5000);
+    window.setInterval(() => refreshMessages().catch(() => {}), 3000);
+    window.setInterval(() => refreshMap().catch(() => {}), 5000);
+    window.setInterval(() => refreshTargets().catch(() => {}), 10000);
   }
 
   async function bootstrap() {
     bindEvents();
     initMap();
-
-    try {
-      await loadConfig({ force: true });
-    } catch (err) {
-      if (els.configStatus) {
-        els.configStatus.textContent = err.message || "Config load failed";
-        els.configStatus.className = "form-status error";
-      }
-    }
-
-    await Promise.allSettled([
-      refreshStatus(),
-      refreshNodes(),
-      refreshMessages(),
-      refreshMap(),
-    ]);
-
+    try { await loadConfig(true); } catch (_) {}
+    await Promise.allSettled([refreshStatus(), refreshNodes(), refreshMessages(), refreshMap(), refreshTargets()]);
     schedulePolling();
   }
 
