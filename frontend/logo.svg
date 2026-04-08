@@ -1,0 +1,20 @@
+<svg width="240" height="50" viewBox="0 0 240 50" xmlns="http://www.w3.org/2000/svg">
+  <g fill="none" stroke="#7db7ff" stroke-width="2" stroke-linecap="round">
+    <!-- center node -->
+    <circle cx="25" cy="25" r="3" fill="#7db7ff"/>
+
+    <!-- signal arcs -->
+    <path d="M25 18 Q32 25 25 32"/>
+    <path d="M25 12 Q38 25 25 38"/>
+    <path d="M25 6 Q45 25 25 44"/>
+  </g>
+
+  <!-- MeshTAK text -->
+  <text x="60" y="32"
+        font-family="monospace"
+        font-size="26"
+        fill="#ffffff"
+        letter-spacing="1">
+    MeshTAK
+  </text>
+</svg>
