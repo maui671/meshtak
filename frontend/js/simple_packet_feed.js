@@ -1,5 +1,5 @@
 /**
- * Simple live packet feed for the local Mesh Point dashboard.
+ * Simple live packet feed for the local MeshTAK dashboard.
  * Renders incoming packets via WebSocket with expand-on-click.
  */
 class SimplePacketFeed {

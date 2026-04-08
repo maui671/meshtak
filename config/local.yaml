@@ -1,0 +1,66 @@
+radio:
+  region: "US"
+  frequency_mhz: 906.875
+  spreading_factor: 11
+  bandwidth_khz: 250.0
+  coding_rate: "4/8"
+  sync_word: 0x2B
+  preamble_length: 16
+  tx_power_dbm: 22
+meshtastic:
+  default_key_b64: "AQ=="
+  channel_keys: {}
+meshcore:
+  default_key_b64: ""
+  channel_keys: {}
+capture:
+  sources:
+    - "concentrator"
+  serial_port: null
+  serial_baud: 115200
+  concentrator_spi_device: "/dev/spidev0.0"
+  meshcore_usb:
+    serial_port: null
+    baud_rate: 115200
+    auto_detect: false
+storage:
+  database_path: "data/concentrator.db"
+  max_packets_retained: 100000
+  cleanup_interval_seconds: 3600
+dashboard:
+  host: "0.0.0.0"
+  port: 9443
+  static_dir: "frontend"
+upstream:
+  enabled: false
+  url: ""
+  reconnect_interval_seconds: 10
+  buffer_max_size: 5000
+  auth_token: null
+device:
+  device_name: "MeshTAK"
+  latitude: 0.0
+  longitude: 0.0
+  altitude: 25
+  hardware_description: "WM1303 + Raspberry Pi 4"
+  firmware_version: "1.0.0"
+relay:
+  enabled: false
+  serial_port: null
+  serial_baud: 115200
+  max_relay_per_minute: 20
+  burst_size: 5
+  min_relay_rssi: -110.0
+  max_relay_rssi: -50.0
+mqtt:
+  enabled: false
+  broker: "mqtt.meshtastic.org"
+  port: 1883
+  username: "meshdev"
+  password: "large4cats"
+  topic_root: "msh"
+  region: "US"
+  publish_channels: ["LongFast"]
+  publish_json: false
+  location_precision: "exact"
+  homeassistant_discovery: false

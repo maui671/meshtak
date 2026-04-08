@@ -1,14 +1,23 @@
 /**
- * Single-page controller for the local Mesh Point dashboard.
- * Wires up map, node list, packet feed, stat cards, and WebSocket.
+ * MeshTAK dashboard controller
+ * Preserves the Mesh Point dashboard behavior and adds:
+ * - radio status polling
+ * - Meshtastic node overlay for messaging recipients
+ * - channel selector injection/population
+ * - message feed loading
+ * - send-message wiring
  */
+
 document.addEventListener('DOMContentLoaded', async () => {
     const nodeMap = new NodeMap('map');
     const nodeList = new SimpleNodeList('node-list');
     const packetFeed = new SimplePacketFeed('packet-tbody');
 
+    _ensureMessageChannelSelector();
+
     await _loadInitial(nodeMap, nodeList, packetFeed);
     await _updateStats();
+    await _refreshRadioUi();
     _checkForUpdate();
 
     window.concentratorWS.on('packet', (packet) => {
@@ -19,12 +28,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     window.concentratorWS.connect();
-    await _initMessaging();
+
+    const sendBtn = document.getElementById('message-send');
+    if (sendBtn) {
+        sendBtn.addEventListener('click', _sendMessage);
+    }
 
     setInterval(() => {
         _refreshData(nodeMap, nodeList);
         _updateStats();
     }, 15_000);
+
+    setInterval(async () => {
+        await _refreshRadioUi();
+    }, 5_000);
 
     setInterval(_checkForUpdate, 300_000);
 });
@@ -36,11 +53,12 @@ async function _loadInitial(nodeMap, nodeList, packetFeed) {
             fetch('/api/nodes'),
             fetch('/api/packets?limit=50'),
         ]);
+
         const device = await deviceRes.json();
         const nodesData = await nodesRes.json();
         const packetsData = await packetsRes.json();
 
-        _setText('device-name', device.device_name || 'Mesh Point');
+        _setText('device-name', device.device_name || 'MeshTAK');
 
         const nodes = nodesData.nodes || nodesData || [];
         nodeMap.loadNodes(nodes, device);
@@ -52,6 +70,7 @@ async function _loadInitial(nodeMap, nodeList, packetFeed) {
             const bTime = b.rx_time || new Date(b.timestamp || 0).getTime() / 1000;
             return aTime - bTime;
         });
+
         sorted.forEach(pkt => packetFeed.addPacket(pkt));
         _totalPackets = sorted.length;
     } catch (e) {
@@ -118,6 +137,227 @@ async function _updateStats() {
     }
 }
 
+async function _refreshRadioUi() {
+    await Promise.allSettled([
+        _refreshRadioStatus(),
+        _refreshRadioNodes(),
+        _refreshChannels(),
+        _refreshMessages(),
+    ]);
+}
+
+async function _refreshRadioStatus() {
+    try {
+        const res = await fetch('/api/radio/status');
+        const data = await res.json();
+        const status = data.status || (data.connected ? 'connected' : 'disconnected');
+
+        _setText('msg-status', status);
+
+        const settingsStatus = document.getElementById('radio-settings-status');
+        if (settingsStatus) {
+            settingsStatus.textContent = status;
+        }
+
+        const sendBtn = document.getElementById('message-send');
+        const msgBox = document.getElementById('message-text');
+        const target = document.getElementById('message-target');
+        const channel = document.getElementById('message-channel');
+
+        const enabled = !!data.connected;
+        if (sendBtn) sendBtn.disabled = !enabled;
+        if (msgBox) msgBox.disabled = !enabled;
+        if (target) target.disabled = !enabled;
+        if (channel) channel.disabled = !enabled;
+    } catch (e) {
+        console.error('Radio status refresh failed:', e);
+        _setText('msg-status', 'disconnected');
+    }
+}
+
+async function _refreshRadioNodes() {
+    try {
+        const res = await fetch('/api/radio/nodes');
+        const data = await res.json();
+        const nodes = data.nodes || [];
+
+        const target = document.getElementById('message-target');
+        if (!target) return;
+
+        const current = target.value;
+        target.innerHTML = '';
+
+        const broadcastOpt = document.createElement('option');
+        broadcastOpt.value = '';
+        broadcastOpt.textContent = 'Broadcast';
+        target.appendChild(broadcastOpt);
+
+        nodes
+            .slice()
+            .sort((a, b) => {
+                const an = _nodeDisplayName(a).toLowerCase();
+                const bn = _nodeDisplayName(b).toLowerCase();
+                return an.localeCompare(bn);
+            })
+            .forEach((node) => {
+                const nodeId = node.node_id || '';
+                if (!nodeId) return;
+
+                const opt = document.createElement('option');
+                opt.value = nodeId;
+                opt.textContent = `${_nodeDisplayName(node)} (${nodeId})`;
+                target.appendChild(opt);
+            });
+
+        if ([...target.options].some(o => o.value === current)) {
+            target.value = current;
+        }
+    } catch (e) {
+        console.error('Radio nodes refresh failed:', e);
+    }
+}
+
+async function _refreshChannels() {
+    try {
+        const res = await fetch('/api/radio/channels');
+        const data = await res.json();
+        const channels = data.channels || [];
+
+        const select = document.getElementById('message-channel');
+        if (!select) return;
+
+        const current = select.value;
+        select.innerHTML = '';
+
+        channels.forEach((ch) => {
+            const idx = Number.isFinite(Number(ch.index)) ? Number(ch.index) : 0;
+            const name = ch.name || `Channel ${idx}`;
+            const opt = document.createElement('option');
+            opt.value = String(idx);
+            opt.textContent = ch.pinned ? `${name} ★` : name;
+            opt.dataset.channelName = name;
+            select.appendChild(opt);
+        });
+
+        if (select.options.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = '0';
+            opt.textContent = 'Broadcast';
+            opt.dataset.channelName = 'Broadcast';
+            select.appendChild(opt);
+        }
+
+        if ([...select.options].some(o => o.value === current)) {
+            select.value = current;
+        }
+    } catch (e) {
+        console.error('Channel refresh failed:', e);
+    }
+}
+
+async function _refreshMessages() {
+    try {
+        const res = await fetch('/api/messages');
+        const data = await res.json();
+        const messages = data.messages || [];
+
+        const feed = document.getElementById('message-feed');
+        if (!feed) return;
+
+        feed.innerHTML = '';
+
+        messages
+            .slice(-50)
+            .forEach((msg) => {
+                const row = document.createElement('div');
+                row.style.padding = '8px 10px';
+                row.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
+                row.style.fontSize = '13px';
+
+                const who = msg.direction === 'tx'
+                    ? `TX → ${msg.to_name || msg.to_id || 'Broadcast'}`
+                    : `RX ← ${msg.from_name || msg.from_id || 'Unknown'}`;
+
+                const chan = msg.channel ? ` [${msg.channel}]` : '';
+                row.textContent = `${who}${chan}: ${msg.text || ''}`;
+                feed.appendChild(row);
+            });
+
+        feed.scrollTop = feed.scrollHeight;
+    } catch (e) {
+        console.error('Message refresh failed:', e);
+    }
+}
+
+async function _sendMessage() {
+    const target = document.getElementById('message-target');
+    const channel = document.getElementById('message-channel');
+    const textBox = document.getElementById('message-text');
+
+    const text = (textBox?.value || '').trim();
+    if (!text) {
+        _setText('msg-status', 'message required');
+        return;
+    }
+
+    const channelIndex = channel ? parseInt(channel.value || '0', 10) : 0;
+    const channelName = channel?.selectedOptions?.[0]?.dataset?.channelName || 'Broadcast';
+    const to = target?.value || '';
+
+    try {
+        _setText('msg-status', 'sending...');
+
+        const res = await fetch('/api/messages/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                to: to || null,
+                channel_index: Number.isFinite(channelIndex) ? channelIndex : 0,
+                channel_name: channelName,
+            }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.detail || data.error || 'send failed');
+        }
+
+        if (textBox) textBox.value = '';
+        _setText('msg-status', 'sent');
+        await _refreshMessages();
+    } catch (e) {
+        console.error('Send failed:', e);
+        _setText('msg-status', e.message || 'send failed');
+    }
+}
+
+function _ensureMessageChannelSelector() {
+    const existing = document.getElementById('message-channel');
+    if (existing) return; // don't create duplicates
+
+    const panel = document.querySelector('.messaging-panel');
+    if (!panel) return;
+
+    const select = document.createElement('select');
+    select.id = 'message-channel';
+    select.className = 'node-search';
+    select.style.marginBottom = '8px';
+
+    const label = document.createElement('div');
+    label.textContent = 'Channel';
+    label.style.fontSize = '12px';
+    label.style.opacity = '0.7';
+    label.style.marginTop = '6px';
+
+    panel.appendChild(label);
+    panel.appendChild(select);
+}
+
+function _nodeDisplayName(node) {
+    return node.short_name || node.display_name || node.long_name || node.node_id || 'Unknown';
+}
+
 let _totalPackets = 0;
 
 function _incrementPacketCount() {
@@ -151,65 +391,4 @@ async function _checkForUpdate() {
 function _setText(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
-}
-
-
-async function _initMessaging() {
-    const sendBtn = document.getElementById('message-send');
-    const targetSel = document.getElementById('message-target');
-    const textBox = document.getElementById('message-text');
-    if (!sendBtn || !targetSel || !textBox) return;
-    await _refreshMessaging();
-    sendBtn.addEventListener('click', async () => {
-        const text = (textBox.value || '').trim();
-        if (!text) return;
-        let meta = {};
-        try { meta = JSON.parse(targetSel.value || '{}'); } catch (_) {}
-        await fetch('/api/messages/send', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text, to: meta.to || null, channel_index: meta.channel_index ?? null, channel_name: meta.channel_name || null})
-        });
-        textBox.value = '';
-        await _refreshMessaging();
-    });
-    setInterval(_refreshMessaging, 5000);
-}
-
-async function _refreshMessaging() {
-    const targetSel = document.getElementById('message-target');
-    const feed = document.getElementById('message-feed');
-    const status = document.getElementById('msg-status');
-    if (!targetSel || !feed) return;
-    try {
-        const [targetsRes, msgRes, statusRes] = await Promise.all([
-            fetch('/api/message-targets'),
-            fetch('/api/messages?limit=50'),
-            fetch('/api/status')
-        ]);
-        const targetsData = await targetsRes.json();
-        const msgsData = await msgRes.json();
-        const statData = await statusRes.json();
-        if (status) status.textContent = statData.active_connected ? 'Heltec connected' : 'Heltec offline';
-        const current = targetSel.value;
-        targetSel.innerHTML = '';
-        (targetsData.targets || []).forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = JSON.stringify(t);
-            opt.textContent = t.label;
-            targetSel.appendChild(opt);
-        });
-        if (current) targetSel.value = current;
-        feed.innerHTML = '';
-        (msgsData.messages || []).slice().reverse().forEach(m => {
-            const div = document.createElement('div');
-            div.className = 'message-item';
-            const who = m.direction === 'tx' ? 'TX' : (m.from_name || m.from_id || 'RX');
-            const when = m.created_at || m.timestamp || '';
-            div.innerHTML = `<div class="message-head">${who} <span>${when}</span></div><div class="message-body">${(m.text || '').replace(/</g,'&lt;')}</div>`;
-            feed.appendChild(div);
-        });
-    } catch (e) {
-        if (status) status.textContent = 'Messaging unavailable';
-    }
 }
