@@ -168,5 +168,5 @@ EOF
 set_permissions(){ chown -R "$RUN_USER:$RUN_GROUP" "$APP_DIR" "$CONFIG_DIR"; }
 reload_and_start(){ systemctl daemon-reload; systemctl enable meshtak.service; systemctl restart meshtak.service; }
 open_firewall(){ [[ "$OPEN_UFW" == true ]] || return 0; command -v ufw >/dev/null 2>&1 && ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true; }
-main(){ require_root; ask_questions; install_packages; enable_pi_interfaces; ensure_groups; prepare_dirs; copy_app; create_venv; generate_web_cert; write_json_config; write_yaml_config; write_env_file; write_service; set_permissions; reload_and_start; open_firewall; echo; echo "https://$(hostname -I | awk '{print $1}'):${WEB_PORT}"; }
+main(){ require_root; ask_questions; install_packages; enable_pi_interfaces; ensure_groups; prepare_dirs; copy_app; create_venv; generate_web_cert; write_json_config; write_yaml_config; write_env_file; write_service; set_permissions; reload_and_start; open_firewall; echo; systemctl status meshtak ; echo "https://$(hostname -I | awk '{print $1}'):${WEB_PORT}" ; }
 main "$@"
