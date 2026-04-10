@@ -3,272 +3,281 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MeshTAK</title>
+    <title>MeshTAK Command Center</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/dashboard.css" />
-    <style>
-        .settings-toggle {
-            appearance: none;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(255,255,255,0.06);
-            color: #fff;
-            width: 42px;
-            height: 42px;
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 20px;
-            line-height: 1;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-        }
-
-        .settings-toggle:hover {
-            background: rgba(255,255,255,0.12);
-            border-color: rgba(125,183,255,0.45);
-            transform: rotate(15deg);
-        }
-
-        .settings-backdrop {
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.45);
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.2s ease;
-            z-index: 90;
-        }
-
-        .settings-backdrop.open {
-            opacity: 1;
-            pointer-events: auto;
-        }
-
-        .settings-drawer {
-            position: fixed;
-            top: 0;
-            right: 0;
-            width: min(460px, 92vw);
-            height: 100vh;
-            background: #111827;
-            border-left: 1px solid rgba(255,255,255,0.08);
-            box-shadow: -12px 0 30px rgba(0,0,0,0.35);
-            transform: translateX(100%);
-            transition: transform 0.25s ease;
-            z-index: 100;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .settings-drawer.open {
-            transform: translateX(0);
-        }
-
-        .settings-drawer__header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 18px 20px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            background: #0f172a;
-        }
-
-        .settings-drawer__title {
-            font-size: 18px;
-            font-weight: 600;
-            margin: 0;
-        }
-
-        .settings-close {
-            appearance: none;
-            border: 0;
-            background: transparent;
-            color: #cbd5e1;
-            font-size: 24px;
-            cursor: pointer;
-            padding: 0;
-            width: 32px;
-            height: 32px;
-        }
-
-        .settings-drawer__body {
-            padding: 18px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .settings-section {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.07);
-            border-radius: 14px;
-            padding: 16px;
-        }
-
-        .settings-section__title {
-            margin: 0 0 12px 0;
-            font-size: 14px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            color: #93c5fd;
-        }
-
-        .settings-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-
-        .settings-field {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .settings-field--full {
-            grid-column: 1 / -1;
-        }
-
-        .settings-field label {
-            font-size: 12px;
-            color: #cbd5e1;
-        }
-
-        .settings-field input,
-        .settings-field select {
-            width: 100%;
-            box-sizing: border-box;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(15,23,42,0.8);
-            color: #fff;
-            border-radius: 10px;
-            padding: 10px 12px;
-            font-size: 14px;
-        }
-
-        .settings-actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 14px;
-        }
-
-        .settings-btn {
-            appearance: none;
-            border: 1px solid rgba(255,255,255,0.1);
-            background: rgba(255,255,255,0.07);
-            color: #fff;
-            border-radius: 10px;
-            padding: 10px 14px;
-            font-size: 14px;
-            cursor: pointer;
-        }
-
-        .settings-btn--primary {
-            background: #2563eb;
-            border-color: #2563eb;
-        }
-
-        .settings-btn--danger {
-            background: #7f1d1d;
-            border-color: #991b1b;
-        }
-
-        .settings-status {
-            margin-top: 10px;
-            font-size: 12px;
-            color: #93c5fd;
-            min-height: 16px;
-        }
-
-        .toggle-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 10px 0;
-        }
-
-        .toggle-row span {
-            font-size: 14px;
-            color: #e2e8f0;
-        }
-
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 48px;
-            height: 26px;
-        }
-
-        .switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .slider {
-            position: absolute;
-            inset: 0;
-            background: #334155;
-            transition: 0.2s;
-            border-radius: 999px;
-            cursor: pointer;
-        }
-
-        .slider:before {
-            content: "";
-            position: absolute;
-            width: 20px;
-            height: 20px;
-            left: 3px;
-            top: 3px;
-            background: white;
-            transition: 0.2s;
-            border-radius: 50%;
-        }
-
-        .switch input:checked + .slider {
-            background: #2563eb;
-        }
-
-        .switch input:checked + .slider:before {
-            transform: translateX(22px);
-        }
-    </style>
 </head>
 <body>
-    <header class="top-bar">
-        <div class="top-bar__brand" style="display:flex;align-items:center;gap:12px;">
-            <img src="/logo.svg" alt="MeshTAK" style="height:40px;">
-            <h1 style="margin:0;font-weight:600;letter-spacing:1px;"></h1>
+    <nav id="sidebar">
+        <div class="sb-brand">
+            <img src="/logo.svg" alt="MeshTAK" class="sb-logo-mark">
         </div>
 
-        <div class="top-bar__status">
-            <span id="ws-status" class="status-dot status-dot--disconnected"></span>
-            <span id="ws-label" class="status-label">Connecting...</span>
-            <span class="top-bar__divider">|</span>
-            <span id="node-count-badge" class="top-bar__stat">0 nodes</span>
-            <span class="top-bar__divider">|</span>
-            <span id="packet-count-badge" class="top-bar__stat">0 packets</span>
-            <span class="top-bar__divider">|</span>
-            <span id="device-name" class="top-bar__device"></span>
-            <span id="version-badge" class="top-bar__version">--</span>
-            <a id="update-badge" class="update-badge hidden" title="Update available" href="https://github.com/KMX415/meshpoint/blob/main/docs/ONBOARDING.md#updating" target="_blank" rel="noopener">&#9888;</a>
-            <button id="settings-toggle" class="settings-toggle" title="Settings" aria-label="Settings">&#9881;</button>
+        <div class="sb-nav">
+            <a href="#dashboard" class="sb-item active" data-view-link="dashboard">
+                <span class="sb-icon">[]</span>
+                Dashboard
+            </a>
+            <a href="#map" class="sb-item" data-view-link="map">
+                <span class="sb-icon">O</span>
+                Mesh Map
+            </a>
+            <a href="#nodes" class="sb-item" data-view-link="nodes">
+                <span class="sb-icon">N</span>
+                Nodes
+            </a>
+            <a href="#messages" class="sb-item" data-view-link="messages">
+                <span class="sb-icon">M</span>
+                Messaging
+            </a>
+            <a href="#packets" class="sb-item" data-view-link="packets">
+                <span class="sb-icon">P</span>
+                Packets
+            </a>
+
+            <div class="sb-label">System</div>
+            <button id="settings-toggle" class="sb-item sb-item--button" type="button">
+                <span class="sb-icon">*</span>
+                Settings
+            </button>
         </div>
-    </header>
+
+        <div class="sb-footer">
+            <div class="sb-version" id="version-badge">--</div>
+            <a id="update-badge" class="sb-update hidden" title="Update available" href="https://github.com/KMX415/meshpoint/blob/main/docs/ONBOARDING.md#updating" target="_blank" rel="noopener">Update Available</a>
+        </div>
+    </nav>
+
+    <main id="main">
+        <header id="hdr">
+            <div class="hdr-left">
+                <h1>MeshTAK</h1>
+                <span class="hdr-node" id="device-name">Command Mesh</span>
+            </div>
+            <div class="hdr-right">
+                <span class="hdr-stale" id="hdr-stale">Live</span>
+                <span class="hdr-conn" id="hdr-conn">
+                    <span id="ws-status" class="hdr-dot red"></span>
+                    <span id="ws-label">Connecting...</span>
+                </span>
+                <span class="hdr-uptime" id="stat-uptime-val">--</span>
+                <span class="hdr-clock" id="hdr-clock">--:--:--</span>
+            </div>
+        </header>
+
+        <section id="dashboard" class="status-banner app-view app-view--dashboard active" data-view="dashboard">
+            <div class="status-banner__left">
+                <div class="status-banner__label">Network Status</div>
+                <div class="status-banner__value" id="network-posture">Standby</div>
+            </div>
+            <div class="status-banner__detail" id="network-detail">Waiting for node, packet, and radio telemetry.</div>
+        </section>
+
+        <section id="kpi-row" class="kpi-row app-view app-view--dashboard active" data-view="dashboard">
+            <article class="kpi">
+                <div class="kpi-val" id="stat-nodes-val">--</div>
+                <div class="kpi-label">Nodes Seen / Active</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-packets-val">--</div>
+                <div class="kpi-label">Packets Captured</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-rate-val">--</div>
+                <div class="kpi-label">Packets Per Minute</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-rssi-val">--</div>
+                <div class="kpi-label">Average RSSI</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-relay-val">--</div>
+                <div class="kpi-label">Packets Relayed</div>
+                <div class="kpi-sub" id="stat-relay-sub"></div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-cpu-val">--</div>
+                <div class="kpi-label">CPU</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-ram-val">--</div>
+                <div class="kpi-label">RAM</div>
+                <div class="kpi-sub" id="stat-ram-sub"></div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-disk-val">--</div>
+                <div class="kpi-label">Disk</div>
+                <div class="kpi-sub" id="stat-disk-sub"></div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-temp-val">--</div>
+                <div class="kpi-label">CPU Temp</div>
+            </article>
+        </section>
+
+        <section class="workspace">
+            <div class="split-row">
+                <section id="map-panel" class="section split-left app-view app-view--map" data-view="map">
+                    <div class="sec-head">
+                        <div>
+                            <h2>Mesh Map</h2>
+                            <p>Heltec and passive collector nodes with live packet highlighting.</p>
+                        </div>
+                        <div class="sec-inline-status">
+                            <span id="node-count-badge" class="badge">0 nodes</span>
+                            <span id="packet-count-badge" class="badge badge--muted">0 packets</span>
+                        </div>
+                    </div>
+                    <div id="map" class="map-surface"></div>
+                </section>
+
+                <section id="nodes-panel" class="section split-right app-view app-view--nodes" data-view="nodes">
+                    <div class="sec-head">
+                        <div>
+                            <h2>Node Directory</h2>
+                            <p>Search, focus, and purge node records from the operational view.</p>
+                        </div>
+                        <div class="sec-actions">
+                            <button id="node-purge-visible" class="action-btn action-btn--warn" type="button">Purge Visible</button>
+                            <button id="node-purge-all" class="action-btn action-btn--danger" type="button">Purge All</button>
+                        </div>
+                    </div>
+                    <div class="node-tools">
+                        <input type="text" id="node-search" class="ct-search" placeholder="Search nodes..." autocomplete="off" spellcheck="false">
+                        <div id="node-feed-status" class="node-meta">0 nodes</div>
+                    </div>
+                    <div id="node-list" class="node-list"></div>
+                </section>
+            </div>
+
+            <section id="messages-panel" class="section app-view app-view--messages" data-view="messages">
+                <div class="sec-head">
+                    <div>
+                        <h2>Messaging</h2>
+                        <p>Send Heltec traffic, inspect channel activity, and watch hop paths.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span id="msg-status" class="badge badge--muted">...</span>
+                    </div>
+                </div>
+
+                <div class="message-compose">
+                    <div class="message-compose__grid">
+                        <select id="message-target" class="toolbar-input"></select>
+                        <select id="message-channel" class="toolbar-input"></select>
+                    </div>
+                    <textarea id="message-text" class="message-box" placeholder="Send via Heltec radio..."></textarea>
+                    <div class="message-actions">
+                        <button id="message-send" class="send-btn" type="button">Send Message</button>
+                    </div>
+                </div>
+
+                <div class="toolbar-section">
+                    <div class="toolbar-grid">
+                        <select id="message-filter-node" class="toolbar-input">
+                            <option value="">All nodes</option>
+                        </select>
+                        <select id="message-filter-channel" class="toolbar-input">
+                            <option value="">All channels</option>
+                        </select>
+                        <select id="message-filter-direction" class="toolbar-input">
+                            <option value="">All directions</option>
+                            <option value="rx">Inbound</option>
+                            <option value="tx">Outbound</option>
+                        </select>
+                        <input id="message-filter-query" class="toolbar-input" type="text" placeholder="Search messages">
+                    </div>
+                    <div class="toolbar-actions">
+                        <label class="toolbar-check">
+                            <input id="message-follow-toggle" type="checkbox" checked>
+                            <span>Follow latest</span>
+                        </label>
+                        <span id="message-follow-state" class="toolbar-state">following latest</span>
+                        <button id="message-clear-filters" class="action-btn" type="button">Clear Filters</button>
+                        <button id="message-purge-visible" class="action-btn action-btn--warn" type="button">Purge Visible</button>
+                        <button id="message-purge-all" class="action-btn action-btn--danger" type="button">Purge All</button>
+                    </div>
+                </div>
+
+                <div id="message-feed-status" class="feed-meta">0 messages</div>
+                <div id="message-feed" class="message-feed"></div>
+            </section>
+
+            <section id="packets-panel" class="section app-view app-view--packets" data-view="packets">
+                <div class="sec-head">
+                    <div>
+                        <h2>Packet Watch</h2>
+                        <p>Protocol mix, RSSI, SNR, hop budgets, and decoded payload details.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span class="badge" id="packet-count">0</span>
+                    </div>
+                </div>
+
+                <div class="toolbar-section toolbar-section--packets">
+                    <div class="toolbar-grid">
+                        <select id="packet-filter-node" class="toolbar-input">
+                            <option value="">All nodes</option>
+                        </select>
+                        <select id="packet-filter-protocol" class="toolbar-input">
+                            <option value="">All protocols</option>
+                            <option value="meshtastic">Meshtastic</option>
+                            <option value="meshcore">MeshCore</option>
+                        </select>
+                        <select id="packet-filter-type" class="toolbar-input">
+                            <option value="">All types</option>
+                            <option value="text">Text</option>
+                            <option value="position">Position</option>
+                            <option value="telemetry">Telemetry</option>
+                            <option value="nodeinfo">Node Info</option>
+                            <option value="routing">Routing</option>
+                            <option value="traceroute">Traceroute</option>
+                            <option value="neighborinfo">Neighbor Info</option>
+                            <option value="encrypted">Encrypted</option>
+                        </select>
+                        <input id="packet-filter-query" class="toolbar-input" type="text" placeholder="Search packet details">
+                    </div>
+                    <div class="toolbar-actions">
+                        <label class="toolbar-check">
+                            <input id="packet-follow-toggle" type="checkbox" checked>
+                            <span>Follow newest</span>
+                        </label>
+                        <span id="packet-follow-state" class="toolbar-state">following newest</span>
+                        <button id="packet-clear-filters" class="action-btn" type="button">Clear Filters</button>
+                        <button id="packet-purge-visible" class="action-btn action-btn--warn" type="button">Purge Visible</button>
+                        <button id="packet-purge-all" class="action-btn action-btn--danger" type="button">Purge All</button>
+                    </div>
+                </div>
+
+                <div id="packet-feed-status" class="feed-meta">0 packets</div>
+                <div id="packet-scroll" class="tbl-wrap">
+                    <table class="packet-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Protocol</th>
+                                <th>Source</th>
+                                <th>Dest</th>
+                                <th>Type</th>
+                                <th>RSSI</th>
+                                <th>SNR</th>
+                                <th>Hops</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="packet-tbody"></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+    </main>
 
     <div id="settings-backdrop" class="settings-backdrop"></div>
-
     <aside id="settings-drawer" class="settings-drawer" aria-hidden="true">
         <div class="settings-drawer__header">
             <h2 class="settings-drawer__title">Settings</h2>
@@ -279,13 +288,12 @@
             <section class="settings-section">
                 <h3 class="settings-section__title">TAK Forwarding</h3>
                 <div class="toggle-row">
-                    <span>Enable TAK forwarding</span>
+                    <span>Enable TAK ingestion</span>
                     <label class="switch">
                         <input id="tak-enabled" type="checkbox">
                         <span class="slider"></span>
                     </label>
                 </div>
-
                 <div class="settings-grid">
                     <div class="settings-field settings-field--full">
                         <label for="tak-host">TAK Host</label>
@@ -302,52 +310,38 @@
                             <option value="udp">UDP</option>
                         </select>
                     </div>
-                    <div class="settings-field settings-field--full">
-                        <div class="toggle-row" style="padding:0;">
-                            <span>Use TLS</span>
-                            <label class="switch">
-                                <input id="tak-tls" type="checkbox">
-                                <span class="slider"></span>
-                            </label>
-                        </div>
-                    </div>
                 </div>
 
                 <div class="settings-actions">
-                    <button id="tak-save" class="settings-btn settings-btn--primary">Save TAK</button>
-                    <button id="tak-test" class="settings-btn">Test Connection</button>
+                    <button id="tak-save" class="settings-btn settings-btn--primary" type="button">Save TAK</button>
+                    <button id="tak-test" class="settings-btn" type="button">Test Connection</button>
                 </div>
                 <div id="tak-settings-status" class="settings-status"></div>
             </section>
 
             <section class="settings-section">
                 <h3 class="settings-section__title">Passive Collector</h3>
-                <div class="toggle-row">
-                    <span>Enable WM1303 collector</span>
-                    <label class="switch">
-                        <input id="collector-enabled" type="checkbox">
-                        <span class="slider"></span>
-                    </label>
+                <div class="settings-grid">
+                    <div class="settings-field settings-field--full">
+                        <label for="collector-spi-device">SPI Device</label>
+                        <select id="collector-spi-device">
+                            <option value="/dev/spidev0.0">/dev/spidev0.0</option>
+                            <option value="/dev/spidev0.1">/dev/spidev0.1</option>
+                            <option value="/dev/spidev1.0">/dev/spidev1.0</option>
+                            <option value="/dev/spidev1.1">/dev/spidev1.1</option>
+                        </select>
+                    </div>
                 </div>
-
                 <div class="settings-actions">
-                    <button id="collector-start" class="settings-btn settings-btn--primary">Start</button>
-                    <button id="collector-stop" class="settings-btn settings-btn--danger">Stop</button>
-                    <button id="collector-reconnect" class="settings-btn">Reconnect</button>
+                    <button id="collector-start" class="settings-btn settings-btn--primary" type="button">Start</button>
+                    <button id="collector-stop" class="settings-btn settings-btn--danger" type="button">Stop</button>
+                    <button id="collector-reconnect" class="settings-btn" type="button">Reconnect</button>
                 </div>
                 <div id="collector-settings-status" class="settings-status">Collector status unknown</div>
             </section>
 
             <section class="settings-section">
                 <h3 class="settings-section__title">Active Radio</h3>
-                <div class="toggle-row">
-                    <span>Enable Heltec messaging radio</span>
-                    <label class="switch">
-                        <input id="radio-enabled" type="checkbox">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-
                 <div class="settings-grid">
                     <div class="settings-field">
                         <label for="radio-type">Connection Type</label>
@@ -371,9 +365,9 @@
                 </div>
 
                 <div class="settings-actions">
-                    <button id="radio-connect" class="settings-btn settings-btn--primary">Connect</button>
-                    <button id="radio-disconnect" class="settings-btn settings-btn--danger">Disconnect</button>
-                    <button id="radio-reconnect" class="settings-btn">Reconnect</button>
+                    <button id="radio-connect" class="settings-btn settings-btn--primary" type="button">Connect</button>
+                    <button id="radio-disconnect" class="settings-btn settings-btn--danger" type="button">Disconnect</button>
+                    <button id="radio-reconnect" class="settings-btn" type="button">Reconnect</button>
                 </div>
                 <div id="radio-settings-status" class="settings-status">Radio status unknown</div>
             </section>
@@ -381,117 +375,12 @@
             <section class="settings-section">
                 <h3 class="settings-section__title">System</h3>
                 <div class="settings-actions">
-                    <button id="system-refresh-settings" class="settings-btn">Reload Settings</button>
+                    <button id="system-refresh-settings" class="settings-btn" type="button">Reload Settings</button>
                 </div>
                 <div id="system-settings-status" class="settings-status"></div>
             </section>
         </div>
     </aside>
-
-    <main class="dashboard">
-        <section class="dashboard__stats">
-            <div class="stat-card" id="stat-nodes">
-                <div class="stat-card__label">Nodes Discovered</div>
-                <div class="stat-card__value" id="stat-nodes-val">--</div>
-                <div class="stat-card__subtitle">24h / total</div>
-            </div>
-            <div class="stat-card" id="stat-packets-card">
-                <div class="stat-card__label">Total Packets</div>
-                <div class="stat-card__value" id="stat-packets-val">--</div>
-            </div>
-            <div class="stat-card" id="stat-rate">
-                <div class="stat-card__label">Packets / Min</div>
-                <div class="stat-card__value" id="stat-rate-val">--</div>
-            </div>
-            <div class="stat-card" id="stat-rssi">
-                <div class="stat-card__label">Avg RSSI</div>
-                <div class="stat-card__value" id="stat-rssi-val">--</div>
-            </div>
-            <div class="stat-card stat-card--relay" id="stat-relay">
-                <div class="stat-card__label">Packets Relayed</div>
-                <div class="stat-card__value" id="stat-relay-val">--</div>
-                <div class="stat-card__sub" id="stat-relay-sub"></div>
-            </div>
-            <div class="stat-card" id="stat-uptime">
-                <div class="stat-card__label">Uptime</div>
-                <div class="stat-card__value" id="stat-uptime-val">--</div>
-            </div>
-            <div class="stat-card stat-card--system" id="stat-cpu">
-                <div class="stat-card__label">CPU</div>
-                <div class="stat-card__value" id="stat-cpu-val">--</div>
-            </div>
-            <div class="stat-card stat-card--system" id="stat-ram">
-                <div class="stat-card__label">RAM</div>
-                <div class="stat-card__value" id="stat-ram-val">--</div>
-                <div class="stat-card__sub" id="stat-ram-sub"></div>
-            </div>
-            <div class="stat-card stat-card--system" id="stat-disk">
-                <div class="stat-card__label">Disk</div>
-                <div class="stat-card__value" id="stat-disk-val">--</div>
-                <div class="stat-card__sub" id="stat-disk-sub"></div>
-            </div>
-            <div class="stat-card stat-card--system" id="stat-temp">
-                <div class="stat-card__label">CPU Temp</div>
-                <div class="stat-card__value" id="stat-temp-val">--</div>
-            </div>
-        </section>
-
-        <div class="dashboard__main">
-            <section class="dashboard__map">
-                <div class="panel">
-                    <div class="panel__header">Node Map</div>
-                    <div id="map" class="panel__body map-container"></div>
-                </div>
-            </section>
-
-            <section class="dashboard__side">
-                <div class="panel panel--nodes">
-                    <div class="panel__header">
-                        <span>Nodes</span>
-                        <input type="text" id="node-search" class="node-search" placeholder="Search..." />
-                    </div>
-                    <div class="panel__body" id="node-list"></div>
-                </div>
-            </section>
-
-            <div class="panel panel--messages">
-                <div class="panel__header"><span>Messaging</span><span id="msg-status" class="status-label">...</span></div>
-                <div class="panel__body messaging-panel">
-                    <select id="message-target" class="node-search"></select>
-                    <textarea id="message-text" class="message-box" placeholder="Send via Heltec radio..."></textarea>
-                    <div class="message-actions"><button id="message-send" class="send-btn">Send</button></div>
-                    <div id="message-feed" class="message-feed"></div>
-                </div>
-            </div>
-        </div>
-
-        <section class="dashboard__feed">
-            <div class="panel">
-                <div class="panel__header">
-                    Packets
-                    <span class="packet-count" id="packet-count">0</span>
-                </div>
-                <div class="panel__body">
-                    <table class="packet-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Protocol</th>
-                                <th>Source</th>
-                                <th>Dest</th>
-                                <th>Type</th>
-                                <th>RSSI</th>
-                                <th>SNR</th>
-                                <th>Hops</th>
-                                <th>Details</th>
-                            </tr>
-                        </thead>
-                        <tbody id="packet-tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-    </main>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
@@ -500,131 +389,5 @@
     <script src="js/simple_node_list.js"></script>
     <script src="js/simple_packet_feed.js"></script>
     <script src="js/app.js"></script>
-    <script>
-        (function () {
-            const drawer = document.getElementById('settings-drawer');
-            const backdrop = document.getElementById('settings-backdrop');
-            const openBtn = document.getElementById('settings-toggle');
-            const closeBtn = document.getElementById('settings-close');
-
-            function openDrawer() {
-                drawer.classList.add('open');
-                backdrop.classList.add('open');
-                drawer.setAttribute('aria-hidden', 'false');
-            }
-
-            function closeDrawer() {
-                drawer.classList.remove('open');
-                backdrop.classList.remove('open');
-                drawer.setAttribute('aria-hidden', 'true');
-            }
-
-            openBtn.addEventListener('click', openDrawer);
-            closeBtn.addEventListener('click', closeDrawer);
-            backdrop.addEventListener('click', closeDrawer);
-            document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') closeDrawer();
-            });
-
-            async function loadSettings() {
-                try {
-                    const resp = await fetch('/api/settings');
-                    if (!resp.ok) throw new Error('settings fetch failed');
-                    const data = await resp.json();
-
-                    const tak = data.tak || {};
-                    const collector = data.collector || {};
-                    const radio = data.radio || {};
-
-                    document.getElementById('tak-enabled').checked = !!tak.enabled;
-                    document.getElementById('tak-host').value = tak.host || '';
-                    document.getElementById('tak-port').value = tak.port || '';
-                    document.getElementById('tak-protocol').value = tak.protocol || 'tcp';
-                    document.getElementById('tak-tls').checked = !!tak.tls;
-
-                    document.getElementById('collector-enabled').checked = !!collector.enabled;
-                    document.getElementById('collector-settings-status').textContent = collector.status || 'Collector status unknown';
-
-                    document.getElementById('radio-enabled').checked = !!radio.enabled;
-                    document.getElementById('radio-type').value = radio.type || 'serial';
-                    document.getElementById('radio-serial').value = radio.serial_port || '';
-                    document.getElementById('radio-host').value = radio.host || '';
-                    document.getElementById('radio-port').value = radio.port || '';
-                    document.getElementById('radio-settings-status').textContent = radio.status || 'Radio status unknown';
-
-                    document.getElementById('system-settings-status').textContent = 'Settings loaded';
-                } catch (err) {
-                    document.getElementById('system-settings-status').textContent = 'Unable to load settings';
-                }
-            }
-
-            async function postJson(url, body, statusElId, okText) {
-                const el = document.getElementById(statusElId);
-                if (el) el.textContent = 'Working...';
-                try {
-                    const resp = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body || {})
-                    });
-                    const data = await resp.json().catch(() => ({}));
-                    if (!resp.ok) throw new Error(data.error || 'Request failed');
-                    if (el) el.textContent = okText || 'Saved';
-                    return data;
-                } catch (err) {
-                    if (el) el.textContent = err.message || 'Request failed';
-                    return null;
-                }
-            }
-
-            document.getElementById('tak-save').addEventListener('click', async () => {
-                await postJson('/api/settings/tak', {
-                    enabled: document.getElementById('tak-enabled').checked,
-                    host: document.getElementById('tak-host').value.trim(),
-                    port: parseInt(document.getElementById('tak-port').value || '0', 10),
-                    protocol: document.getElementById('tak-protocol').value,
-                    tls: document.getElementById('tak-tls').checked
-                }, 'tak-settings-status', 'TAK settings saved');
-            });
-
-            document.getElementById('tak-test').addEventListener('click', async () => {
-                await postJson('/api/settings/tak/test', {}, 'tak-settings-status', 'TAK test sent');
-            });
-
-            document.getElementById('collector-start').addEventListener('click', async () => {
-                await postJson('/api/control/collector/start', {}, 'collector-settings-status', 'Collector started');
-            });
-
-            document.getElementById('collector-stop').addEventListener('click', async () => {
-                await postJson('/api/control/collector/stop', {}, 'collector-settings-status', 'Collector stopped');
-            });
-
-            document.getElementById('collector-reconnect').addEventListener('click', async () => {
-                await postJson('/api/control/collector/reconnect', {}, 'collector-settings-status', 'Collector reconnect requested');
-            });
-
-            document.getElementById('radio-connect').addEventListener('click', async () => {
-                await postJson('/api/control/radio/connect', {
-                    enabled: document.getElementById('radio-enabled').checked,
-                    type: document.getElementById('radio-type').value,
-                    serial_port: document.getElementById('radio-serial').value.trim(),
-                    host: document.getElementById('radio-host').value.trim(),
-                    port: parseInt(document.getElementById('radio-port').value || '0', 10)
-                }, 'radio-settings-status', 'Radio connect requested');
-            });
-
-            document.getElementById('radio-disconnect').addEventListener('click', async () => {
-                await postJson('/api/control/radio/disconnect', {}, 'radio-settings-status', 'Radio disconnected');
-            });
-
-            document.getElementById('radio-reconnect').addEventListener('click', async () => {
-                await postJson('/api/control/radio/reconnect', {}, 'radio-settings-status', 'Radio reconnect requested');
-            });
-
-            document.getElementById('system-refresh-settings').addEventListener('click', loadSettings);
-
-            loadSettings();
-        })();
-    </script>
 </body>
 </html>

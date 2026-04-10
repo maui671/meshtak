@@ -112,12 +112,17 @@ class NodeStore:
         nodes_path: str,
         messages_path: str,
         queue_path: str,
+        hidden_nodes_path: Optional[str] = None,
         max_messages: int = 500,
         max_queue: int = 500,
     ):
         self.nodes_store = JsonFileStore(nodes_path, default_data={})
         self.messages_store = JsonFileStore(messages_path, default_data=[])
         self.queue_store = JsonFileStore(queue_path, default_data=[])
+        self.hidden_nodes_store = JsonFileStore(
+            hidden_nodes_path or f"{nodes_path}.hidden",
+            default_data=[],
+        )
         self.max_messages = max_messages
         self.max_queue = max_queue
 
@@ -161,7 +166,6 @@ class NodeStore:
         if not node_id:
             return ""
 
-        # BROADCAST HANDLING (FIX)
         if node_id.lower() in {
             "broadcast",
             "all",
@@ -216,6 +220,78 @@ class NodeStore:
             node.get("display_name"),
             node.get("node_id"),
         )
+
+    def _read_hidden_nodes(self) -> set[str]:
+        hidden_nodes = self.hidden_nodes_store.read()
+        if not isinstance(hidden_nodes, list):
+            hidden_nodes = []
+        normalized = {
+            self._normalize_node_id(node_id)
+            for node_id in hidden_nodes
+            if self._normalize_node_id(node_id)
+        }
+        if sorted(normalized) != sorted(hidden_nodes):
+            self.hidden_nodes_store.write(sorted(normalized))
+        return normalized
+
+    def _hide_node_ids(self, node_ids: set[str]) -> None:
+        if not node_ids:
+            return
+
+        def updater(hidden_nodes: List[str]) -> List[str]:
+            current = {
+                self._normalize_node_id(node_id)
+                for node_id in (hidden_nodes or [])
+                if self._normalize_node_id(node_id)
+            }
+            current.update(node_ids)
+            return sorted(current)
+
+        self.hidden_nodes_store.update(updater)
+
+    def _extract_hop_values(
+        self,
+        raw: Optional[Dict[str, Any]],
+        hop_start: Optional[Any] = None,
+        hop_limit: Optional[Any] = None,
+    ) -> tuple[Optional[int], Optional[int]]:
+        start = self._safe_int(hop_start)
+        limit = self._safe_int(hop_limit)
+
+        if isinstance(raw, dict):
+            candidates = [
+                raw,
+                raw.get("packet") if isinstance(raw.get("packet"), dict) else None,
+                raw.get("raw") if isinstance(raw.get("raw"), dict) else None,
+            ]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if start is None:
+                    start = self._safe_int(candidate.get("hop_start"))
+                if start is None:
+                    start = self._safe_int(candidate.get("hopStart"))
+                if limit is None:
+                    limit = self._safe_int(candidate.get("hop_limit"))
+                if limit is None:
+                    limit = self._safe_int(candidate.get("hopLimit"))
+
+        return start, limit
+
+    def _format_hop_path(
+        self,
+        raw: Optional[Dict[str, Any]],
+        hop_start: Optional[Any] = None,
+        hop_limit: Optional[Any] = None,
+    ) -> str:
+        start, limit = self._extract_hop_values(raw, hop_start=hop_start, hop_limit=hop_limit)
+        if start is None or limit is None:
+            return ""
+        try:
+            used = max(0, int(start) - int(limit))
+            return f"{used}/{int(start)}"
+        except Exception:
+            return ""
 
     def _merge_nodes(self, base: Dict[str, Any], incoming: Dict[str, Any], node_id: str) -> Dict[str, Any]:
         now = self._now_ts()
@@ -333,6 +409,8 @@ class NodeStore:
         node_id_norm = self._normalize_node_id(node_id)
         if not node_id_norm:
             raise ValueError("node_id is required")
+        if node_id_norm in self._read_hidden_nodes():
+            return {"node_id": node_id_norm, "hidden": True}
 
         def updater(nodes: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             nodes = self._dedupe_nodes_dict(nodes)
@@ -415,6 +493,8 @@ class NodeStore:
         node_id_norm = self._normalize_node_id(node_id)
         if not node_id_norm:
             return None
+        if node_id_norm in self._read_hidden_nodes():
+            return None
         nodes = self._read_nodes_deduped()
         node = nodes.get(node_id_norm)
         return copy.deepcopy(node) if isinstance(node, dict) else None
@@ -423,6 +503,7 @@ class NodeStore:
         nodes = self._read_nodes_deduped()
         if not isinstance(nodes, dict):
             return []
+        hidden_nodes = self._read_hidden_nodes()
 
         items = []
         for node_id, node in nodes.items():
@@ -430,6 +511,8 @@ class NodeStore:
                 continue
             entry = copy.deepcopy(node)
             entry["node_id"] = self._normalize_node_id(entry.get("node_id") or node_id)
+            if not entry["node_id"] or entry["node_id"] in hidden_nodes:
+                continue
             entry["display_name"] = self._preferred_display_name(entry)
             items.append(entry)
 
@@ -440,6 +523,49 @@ class NodeStore:
             )
         )
         return items
+
+    def delete_node(self, node_id: Any) -> bool:
+        node_id_norm = self._normalize_node_id(node_id)
+        if not node_id_norm:
+            return False
+
+        deleted = False
+        self._hide_node_ids({node_id_norm})
+
+        def updater(nodes: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            nonlocal deleted
+            nodes = self._dedupe_nodes_dict(nodes)
+            if node_id_norm in nodes:
+                deleted = True
+                nodes.pop(node_id_norm, None)
+            return nodes
+
+        self.nodes_store.update(updater)
+        return True
+
+    def delete_nodes(self, node_ids: List[Any]) -> int:
+        normalized_ids = {
+            self._normalize_node_id(node_id)
+            for node_id in (node_ids or [])
+            if self._normalize_node_id(node_id)
+        }
+        if not normalized_ids:
+            return 0
+
+        deleted = 0
+        self._hide_node_ids(normalized_ids)
+
+        def updater(nodes: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            nonlocal deleted
+            nodes = self._dedupe_nodes_dict(nodes)
+            for node_id in list(nodes.keys()):
+                if node_id in normalized_ids:
+                    nodes.pop(node_id, None)
+                    deleted += 1
+            return nodes
+
+        self.nodes_store.update(updater)
+        return max(deleted, len(normalized_ids))
 
     def add_message(
         self,
@@ -454,6 +580,8 @@ class NodeStore:
         message_id: Optional[Any] = None,
         acked: bool = False,
         rx_timestamp: Optional[Any] = None,
+        hop_start: Optional[Any] = None,
+        hop_limit: Optional[Any] = None,
         raw: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         direction = self._normalize_text(direction).lower()
@@ -489,6 +617,7 @@ class NodeStore:
             "to_name": to_name_norm or to_id_norm,
             "channel": self._normalize_text(channel),
             "acked": bool(acked),
+            "hop_path": self._format_hop_path(raw, hop_start=hop_start, hop_limit=hop_limit),
             "timestamp": ts,
             "created_at": now,
             "raw": _json_safe(raw if isinstance(raw, dict) else {}),
@@ -498,18 +627,82 @@ class NodeStore:
             if not isinstance(messages, list):
                 messages = []
             messages.append(msg)
-            messages = messages[-self.max_messages :]
-            return messages
+            return messages[-self.max_messages :]
 
         self.messages_store.update(updater)
         return copy.deepcopy(msg)
 
-    def get_messages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _message_matches(
+        self,
+        message: Dict[str, Any],
+        *,
+        node_id: Optional[Any] = None,
+        channel: Optional[str] = None,
+        direction: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> bool:
+        if not isinstance(message, dict):
+            return False
+
+        direction_filter = self._normalize_text(direction).lower()
+        if direction_filter and direction_filter != "all":
+            if self._normalize_text(message.get("direction")).lower() != direction_filter:
+                return False
+
+        node_id_filter = self._normalize_node_id(node_id)
+        if node_id_filter:
+            from_id = self._normalize_node_id(message.get("from_id"))
+            to_id = self._normalize_node_id(message.get("to_id"))
+            if node_id_filter not in {from_id, to_id}:
+                return False
+
+        channel_filter = self._normalize_text(channel).lower()
+        if channel_filter and self._normalize_text(message.get("channel")).lower() != channel_filter:
+            return False
+
+        query_text = self._normalize_text(query).lower()
+        if query_text:
+            haystack = " ".join(
+                [
+                    self._normalize_text(message.get("text")),
+                    self._normalize_text(message.get("from_name")),
+                    self._normalize_text(message.get("to_name")),
+                    self._normalize_text(message.get("channel")),
+                    self._normalize_text(message.get("from_id")),
+                    self._normalize_text(message.get("to_id")),
+                ]
+            ).lower()
+            if query_text not in haystack:
+                return False
+
+        return True
+
+    def get_messages(
+        self,
+        limit: Optional[int] = None,
+        *,
+        node_id: Optional[Any] = None,
+        channel: Optional[str] = None,
+        direction: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         messages = self.messages_store.read()
         if not isinstance(messages, list):
             return []
+
         items = [copy.deepcopy(m) for m in messages if isinstance(m, dict)]
         items.sort(key=lambda m: (m.get("timestamp") or 0, m.get("created_at") or 0))
+        items = [
+            m for m in items
+            if self._message_matches(
+                m,
+                node_id=node_id,
+                channel=channel,
+                direction=direction,
+                query=query,
+            )
+        ]
+
         if limit is not None:
             try:
                 limit_i = max(0, int(limit))
@@ -517,6 +710,40 @@ class NodeStore:
             except (TypeError, ValueError):
                 pass
         return items
+
+    def clear_messages(
+        self,
+        *,
+        node_id: Optional[Any] = None,
+        channel: Optional[str] = None,
+        direction: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> int:
+        deleted = 0
+
+        def updater(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            nonlocal deleted
+            if not isinstance(messages, list):
+                deleted = 0
+                return []
+
+            kept: List[Dict[str, Any]] = []
+            for message in messages:
+                if self._message_matches(
+                    message,
+                    node_id=node_id,
+                    channel=channel,
+                    direction=direction,
+                    query=query,
+                ):
+                    deleted += 1
+                    continue
+                if isinstance(message, dict):
+                    kept.append(message)
+            return kept[-self.max_messages :]
+
+        self.messages_store.update(updater)
+        return deleted
 
     def enqueue_tak(self, cot_xml: str, *, event_type: str = "position", node_id: Optional[Any] = None) -> Dict[str, Any]:
         cot_xml = self._normalize_text(cot_xml)
@@ -537,8 +764,7 @@ class NodeStore:
             if not isinstance(queue, list):
                 queue = []
             queue.append(item)
-            queue = queue[-self.max_queue :]
-            return queue
+            return queue[-self.max_queue :]
 
         self.queue_store.update(updater)
         return copy.deepcopy(item)
@@ -586,8 +812,7 @@ class NodeStore:
             if not isinstance(queue, list):
                 queue = []
             queue.append(item_copy)
-            queue = queue[-self.max_queue :]
-            return queue
+            return queue[-self.max_queue :]
 
         self.queue_store.update(updater)
 

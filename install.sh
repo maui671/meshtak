@@ -38,7 +38,7 @@ choose_serial(){ mapfile -t devs < <(detect_serial); echo; echo "--- Heltec / Ac
 ask_questions(){
  echo; echo "========================================"; echo " MeshTAK install configuration"; echo "========================================"; echo;
  read -r -p "Web UI port [9443]: " WEB_PORT; WEB_PORT="${WEB_PORT:-9443}";
- read -r -p "Device name [MeshTAK]: " DEVICE_NAME; DEVICE_NAME="${DEVICE_NAME:-MeshTAK Collector}";
+ read -r -p "Device name [MeshTAK]: " DEVICE_NAME; DEVICE_NAME="${DEVICE_NAME:-MeshTAK}";
  echo; if [[ "$(prompt_yes_no 'Enable passive WM1303 collector?' 'y')" == y ]]; then PASSIVE_ENABLED=true; else PASSIVE_ENABLED=false; fi
  if [[ "$PASSIVE_ENABLED" == true ]]; then read -r -p "WM1303 SPI device [/dev/spidev0.0]: " SPI_DEV; SPI_DEV="${SPI_DEV:-/dev/spidev0.0}"; fi
  echo; if [[ "$(prompt_yes_no 'Enable active Meshtastic messaging radio (Heltec)?' 'y')" == y ]]; then ACTIVE_ENABLED=true; echo; echo "--- Active Meshtastic Connection Type ---"; echo "  1) Serial"; echo "  2) IP"; while true; do read -r -p "Choose connection type [1-2] [1]: " choice; choice="${choice:-1}"; case "$choice" in 1) ACTIVE_CONN_TYPE=serial; choose_serial; break;; 2) ACTIVE_CONN_TYPE=tcp; read -r -p "Meshtastic device IP/hostname: " ACTIVE_TCP_HOST; ACTIVE_TCP_HOST="${ACTIVE_TCP_HOST:-192.168.1.100}"; read -r -p "Meshtastic TCP port [4403]: " ACTIVE_TCP_PORT; ACTIVE_TCP_PORT="${ACTIVE_TCP_PORT:-4403}"; break;; esac; done; else ACTIVE_ENABLED=false; fi

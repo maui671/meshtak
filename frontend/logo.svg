@@ -1,20 +1,26 @@
-<svg width="240" height="50" viewBox="0 0 240 50" xmlns="http://www.w3.org/2000/svg">
-  <g fill="none" stroke="#7db7ff" stroke-width="2" stroke-linecap="round">
-    <!-- center node -->
-    <circle cx="25" cy="25" r="3" fill="#7db7ff"/>
-
-    <!-- signal arcs -->
-    <path d="M25 18 Q32 25 25 32"/>
-    <path d="M25 12 Q38 25 25 38"/>
-    <path d="M25 6 Q45 25 25 44"/>
+<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MeshTAK">
+  <defs>
+    <linearGradient id="wing" x1="24" y1="26" x2="156" y2="154" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d9f0ff"/>
+      <stop offset="0.45" stop-color="#6db6ff"/>
+      <stop offset="1" stop-color="#1f6fd1"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M90 20 151 150 90 120 29 150 90 20Z" fill="rgba(31,111,209,0.16)" stroke="url(#wing)" stroke-width="7" filter="url(#glow)"/>
+    <path d="M90 20v100" stroke="#d9f0ff" stroke-width="5"/>
+    <path d="M52 102 90 82l38 20" stroke="#83c4ff" stroke-width="5"/>
+    <circle cx="90" cy="82" r="8" fill="#d9f0ff" stroke="#2f8cff" stroke-width="3"/>
+    <circle cx="52" cy="102" r="6" fill="#83c4ff"/>
+    <circle cx="128" cy="102" r="6" fill="#83c4ff"/>
+    <path d="M62 45c17-15 39-15 56 0" stroke="#9bdcff" stroke-width="4" opacity="0.8"/>
+    <path d="M47 61c27-25 59-25 86 0" stroke="#6db6ff" stroke-width="4" opacity="0.55"/>
   </g>
-
-  <!-- MeshTAK text -->
-  <text x="60" y="32"
-        font-family="monospace"
-        font-size="26"
-        fill="#ffffff"
-        letter-spacing="1">
-    MeshTAK
-  </text>
 </svg>

@@ -129,6 +129,28 @@ class NodeRepository:
         )
         await self._db.commit()
 
+    async def delete_by_id(self, node_id: str) -> int:
+        cursor = await self._db.execute(
+            "DELETE FROM nodes WHERE node_id = ?",
+            (node_id,),
+        )
+        deleted = cursor.rowcount
+        await self._db.commit()
+        return max(0, deleted)
+
+    async def delete_many(self, node_ids: list[str]) -> int:
+        cleaned = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
+        if not cleaned:
+            return 0
+        placeholders = ", ".join("?" for _ in cleaned)
+        cursor = await self._db.execute(
+            f"DELETE FROM nodes WHERE node_id IN ({placeholders})",
+            tuple(cleaned),
+        )
+        deleted = cursor.rowcount
+        await self._db.commit()
+        return max(0, deleted)
+
     @staticmethod
     def _row_to_node(row: dict) -> Node:
         return Node(

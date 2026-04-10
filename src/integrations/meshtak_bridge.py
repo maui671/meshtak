@@ -60,6 +60,7 @@ class MeshTakBridge:
             os.path.join(DATA_DIR, "nodes.json"),
             os.path.join(DATA_DIR, "messages.json"),
             os.path.join(DATA_DIR, "queue.json"),
+            hidden_nodes_path=os.path.join(DATA_DIR, "hidden_nodes.json"),
         )
         self.interface = None
         self.tx_queue: "queue.Queue[Dict[str, Optional[str]]]" = queue.Queue()
@@ -286,7 +287,17 @@ class MeshTakBridge:
             elif portnum == "TEXT_MESSAGE_APP":
                 text = decoded.get("text", "")
                 channel = str(packet.get("channel") or decoded.get("channel") or "")
-                self.store.add_message(direction="rx", text=text, from_id=from_id, to_id=to_id, channel=channel, rx_timestamp=rx_time, raw=packet)
+                self.store.add_message(
+                    direction="rx",
+                    text=text,
+                    from_id=from_id,
+                    to_id=to_id,
+                    channel=channel,
+                    rx_timestamp=rx_time,
+                    hop_start=packet.get("hopStart") or packet.get("hop_start"),
+                    hop_limit=packet.get("hopLimit") or packet.get("hop_limit"),
+                    raw=packet,
+                )
                 self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, last_heard=rx_time, via="heltec", raw=packet)
             else:
                 self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, last_heard=rx_time, via="heltec", raw=packet)
@@ -484,4 +495,4 @@ class MeshTakBridge:
                 sent_packet = self.interface.sendText(text, destinationId=destination, **kwargs)
             else:
                 sent_packet = self.interface.sendText(text, **kwargs)
-            self.store.add_message(direction='tx', text=text, to_id=destination, from_id='self', from_name='MeshTAK', to_name=destination or (channel_name or 'Broadcast'), channel=channel_name or (f'ch{channel_index}' if channel_index is not None else ''), rx_timestamp=int(time.time()), raw={'status':'sent','packet':sent_packet,'channel_index':channel_index,'channel_name':channel_name})
+            self.store.add_message(direction='tx', text=text, to_id=destination, from_id='self', from_name='MeshTAK', to_name=destination or (channel_name or 'Broadcast'), channel=channel_name or (f'ch{channel_index}' if channel_index is not None else ''), rx_timestamp=int(time.time()), hop_start=(sent_packet or {}).get('hopStart') if isinstance(sent_packet, dict) else None, hop_limit=(sent_packet or {}).get('hopLimit') if isinstance(sent_packet, dict) else None, raw={'status':'sent','packet':sent_packet,'channel_index':channel_index,'channel_name':channel_name})

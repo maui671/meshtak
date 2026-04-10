@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from src.storage.packet_repository import PacketRepository
 
@@ -9,15 +10,46 @@ router = APIRouter(prefix="/api/packets", tags=["packets"])
 _packet_repo: PacketRepository | None = None
 
 
+class PurgePacketsRequest(BaseModel):
+    node_id: str | None = None
+    protocol: str | None = None
+    packet_type: str | None = None
+    query: str | None = None
+
+
 def init_routes(packet_repo: PacketRepository) -> None:
     global _packet_repo
     _packet_repo = packet_repo
 
 
 @router.get("")
-async def list_packets(limit: int = 100):
-    packets = await _packet_repo.get_recent(limit)
+async def list_packets(
+    limit: int = 100,
+    node_id: str | None = None,
+    protocol: str | None = None,
+    packet_type: str | None = None,
+    query: str | None = None,
+):
+    packets = await _packet_repo.get_recent(
+        limit,
+        node_id=node_id,
+        protocol=protocol,
+        packet_type=packet_type,
+        query=query,
+    )
     return [p.to_dict() for p in packets]
+
+
+@router.post("/purge")
+async def purge_packets(payload: PurgePacketsRequest):
+    deleted = await _packet_repo.purge(
+        node_id=payload.node_id,
+        protocol=payload.protocol,
+        packet_type=payload.packet_type,
+        query=payload.query,
+    )
+    remaining = await _packet_repo.get_count()
+    return {"ok": True, "deleted": deleted, "remaining": remaining}
 
 
 @router.get("/count")

@@ -57,6 +57,7 @@ class NodeMap {
         this._markers = {};
 
         const bounds = [];
+        const seenNodeIds = new Set();
 
         if (device && device.latitude && device.longitude) {
             this._addDeviceMarker(device);
@@ -64,12 +65,15 @@ class NodeMap {
         }
 
         for (const n of nodes) {
-            const lat = n.latitude;
-            const lon = n.longitude;
+            const nodeId = this._normalizeNodeId(n.node_id);
+            if (!nodeId || seenNodeIds.has(nodeId)) continue;
+            const lat = n.latitude ?? n.lat;
+            const lon = n.longitude ?? n.lon;
             if (lat == null || lon == null) continue;
 
+            seenNodeIds.add(nodeId);
             bounds.push([lat, lon]);
-            this._addNodeMarker(n);
+            this._addNodeMarker({ ...n, node_id: nodeId }, lat, lon);
         }
 
         if (!this._hasFitBounds && bounds.length > 0) {
@@ -79,6 +83,29 @@ class NodeMap {
                 this._map.setView(bounds[0], 13);
             }
             this._hasFitBounds = true;
+        }
+    }
+
+    focusNode(nodeId) {
+        const normalizedId = this._normalizeNodeId(nodeId);
+        if (!this._initialized || !normalizedId) {
+            return;
+        }
+        const marker = this._markers[normalizedId];
+        if (!marker) {
+            return;
+        }
+        const latLng = marker.getLatLng();
+        this._map.flyTo(latLng, Math.max(this._map.getZoom(), 14), {
+            animate: true,
+            duration: 0.75,
+        });
+        marker.openPopup();
+    }
+
+    invalidateSize() {
+        if (this._initialized && this._map) {
+            setTimeout(() => this._map.invalidateSize(), 50);
         }
     }
 
@@ -108,44 +135,55 @@ class NodeMap {
         this._deviceMarker.addTo(this._map);
     }
 
-    _addNodeMarker(n) {
-        const isMeshtastic = (n.protocol || 'meshtastic') === 'meshtastic';
-        const color = isMeshtastic ? '#06b6d4' : '#a855f7';
+    _addNodeMarker(n, lat, lon) {
+        const protocol = n.protocol || n.via || 'meshtastic';
+        const isMeshtastic = protocol === 'meshtastic' || protocol === 'heltec';
+        const color = isMeshtastic ? '#5cb6ff' : '#83c4ff';
 
         const heard = n.last_heard || n.last_seen;
-        const isRecent = heard && (Date.now() - new Date(heard).getTime()) < 60000;
+        const heardTs = typeof heard === 'number' ? heard * 1000 : new Date(heard).getTime();
+        const isRecent = heard && (Date.now() - heardTs) < 60000;
 
-        const marker = L.circleMarker([n.latitude, n.longitude], {
+        const marker = L.circleMarker([lat, lon], {
             radius: 6,
             fillColor: color,
             fillOpacity: 0.8,
-            color: isRecent ? '#00ff88' : color,
+            color: isRecent ? '#dff1ff' : color,
             weight: isRecent ? 2 : 1,
             className: isRecent ? 'node-pulse' : '',
         });
 
-        const name = n.long_name || n.name || n.node_id || '--';
+        const name = n.short_name || n.display_name || n.long_name || n.name || n.node_id || '--';
+        const fullName = n.long_name || n.display_name || n.node_id || '--';
         const rssi = (n.rssi ?? n.latest_rssi) != null
             ? `${Number(n.rssi ?? n.latest_rssi).toFixed(0)} dBm` : '--';
 
         marker.bindPopup(
             `<strong>${this._esc(name)}</strong><br>` +
-            `Protocol: ${n.protocol || 'meshtastic'}<br>` +
-            `RSSI: ${rssi}`
+            `Name: ${this._esc(fullName)}<br>` +
+            `Node: ${this._esc(n.node_id || '--')}<br>` +
+            `Protocol: ${this._esc(protocol)}<br>` +
+            `RSSI: ${this._esc(rssi)}`
         );
+        marker.bindTooltip(this._esc(name), {
+            permanent: true,
+            direction: 'top',
+            offset: [0, -8],
+            className: 'node-map-label',
+        });
 
         this._markerGroup.addLayer(marker);
-        this._markers[n.node_id] = marker;
+        this._markers[this._normalizeNodeId(n.node_id)] = marker;
     }
 
     updateFromPacket(packet) {
         if (!packet.source_id || !this._initialized) return;
-        const marker = this._markers[packet.source_id];
+        const marker = this._markers[this._normalizeNodeId(packet.source_id)];
         if (marker) {
-            marker.setStyle({ color: '#00ff88', weight: 2 });
+            marker.setStyle({ color: '#dff1ff', weight: 2 });
             this._drawPacketLine(marker);
             setTimeout(() => {
-                const proto = (packet.protocol || 'meshtastic') === 'meshtastic' ? '#06b6d4' : '#a855f7';
+                const proto = (packet.protocol || 'meshtastic') === 'meshtastic' ? '#5cb6ff' : '#83c4ff';
                 marker.setStyle({ color: proto, weight: 1 });
             }, 5000);
         }
@@ -180,5 +218,13 @@ class NodeMap {
         const el = document.createElement('span');
         el.textContent = str;
         return el.innerHTML;
+    }
+
+    _normalizeNodeId(value) {
+        const text = String(value || '').trim();
+        if (!text) {
+            return '';
+        }
+        return text.startsWith('!') ? text.toLowerCase() : `!${text.toLowerCase()}`;
     }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from typing import Any
 
 from src.models.packet import Packet, PacketType, Protocol
 from src.models.signal import SignalMetrics
@@ -50,10 +51,65 @@ class PacketRepository:
         )
         await self._db.commit()
 
-    async def get_recent(self, limit: int = 100) -> list[Packet]:
+    def _build_filters(
+        self,
+        *,
+        node_id: str | None = None,
+        protocol: str | None = None,
+        packet_type: str | None = None,
+        query: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if node_id:
+            conditions.append("(source_id = ? OR destination_id = ?)")
+            params.extend([node_id, node_id])
+
+        if protocol:
+            conditions.append("LOWER(protocol) = ?")
+            params.append(str(protocol).strip().lower())
+
+        if packet_type:
+            conditions.append("LOWER(packet_type) = ?")
+            params.append(str(packet_type).strip().lower())
+
+        if query:
+            query_text = f"%{str(query).strip().lower()}%"
+            conditions.append(
+                "("
+                "LOWER(COALESCE(source_id, '')) LIKE ? OR "
+                "LOWER(COALESCE(destination_id, '')) LIKE ? OR "
+                "LOWER(COALESCE(protocol, '')) LIKE ? OR "
+                "LOWER(COALESCE(packet_type, '')) LIKE ? OR "
+                "LOWER(COALESCE(decoded_payload, '')) LIKE ?"
+                ")"
+            )
+            params.extend([query_text] * 5)
+
+        if not conditions:
+            return "", params
+
+        return f" WHERE {' AND '.join(conditions)}", params
+
+    async def get_recent(
+        self,
+        limit: int = 100,
+        *,
+        node_id: str | None = None,
+        protocol: str | None = None,
+        packet_type: str | None = None,
+        query: str | None = None,
+    ) -> list[Packet]:
+        where_sql, params = self._build_filters(
+            node_id=node_id,
+            protocol=protocol,
+            packet_type=packet_type,
+            query=query,
+        )
         rows = await self._db.fetch_all(
-            "SELECT * FROM packets ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            f"SELECT * FROM packets{where_sql} ORDER BY timestamp DESC LIMIT ?",
+            tuple(params + [limit]),
         )
         return [self._row_to_packet(r) for r in rows]
 
@@ -69,6 +125,36 @@ class PacketRepository:
     async def get_count(self) -> int:
         row = await self._db.fetch_one("SELECT COUNT(*) as cnt FROM packets")
         return row["cnt"] if row else 0
+
+    async def purge(
+        self,
+        *,
+        node_id: str | None = None,
+        protocol: str | None = None,
+        packet_type: str | None = None,
+        query: str | None = None,
+    ) -> int:
+        where_sql, params = self._build_filters(
+            node_id=node_id,
+            protocol=protocol,
+            packet_type=packet_type,
+            query=query,
+        )
+
+        count_row = await self._db.fetch_one(
+            f"SELECT COUNT(*) as cnt FROM packets{where_sql}",
+            tuple(params),
+        )
+        deleted = int((count_row or {}).get("cnt", 0))
+        if deleted <= 0:
+            return 0
+
+        await self._db.execute(
+            f"DELETE FROM packets{where_sql}",
+            tuple(params),
+        )
+        await self._db.commit()
+        return deleted
 
     async def get_count_since(self, since: datetime) -> int:
         row = await self._db.fetch_one(

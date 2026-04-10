@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from src.analytics.network_mapper import NetworkMapper
 from src.analytics.signal_analyzer import SignalAnalyzer
@@ -42,6 +43,13 @@ _runtime_state: dict[str, dict[str, Any]] = {
     "collector": {"status": "unknown"},
     "radio": {"status": "unknown"},
 }
+
+
+class PurgeMessagesRequest(BaseModel):
+    node_id: str | None = None
+    channel: str | None = None
+    direction: str | None = None
+    query: str | None = None
 
 
 def _normalize_port(value: Any, default: int) -> int:
@@ -81,6 +89,7 @@ def _build_settings_payload() -> dict[str, Any]:
             "status": _runtime_state["collector"].get("status", "unknown"),
             "type": collector.get("type", "wm1303"),
             "config_path": collector.get("config_path", ""),
+            "spi_device": collector.get("spi_device", collector.get("device", "/dev/spidev0.0")),
         },
         "radio": {
             "enabled": bool(radio.get("enabled", False)) or bool(cfg.get("connection", {}).get("enabled", False)),
@@ -196,6 +205,26 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 f.write("\n")
 
         return {"ok": True, "tak": tak}
+
+    @app.post("/api/settings/collector")
+    def save_collector(payload: dict[str, Any] = Body(...)):
+        b = _bridge_required()
+        cfg = b.get_config()
+
+        collector = cfg.setdefault("collector", {})
+        spi_device = str(payload.get("spi_device", collector.get("spi_device", "/dev/spidev0.0"))).strip()
+        allowed = {"/dev/spidev0.0", "/dev/spidev0.1", "/dev/spidev1.0", "/dev/spidev1.1"}
+        collector["spi_device"] = spi_device if spi_device in allowed else "/dev/spidev0.0"
+
+        from src.integrations.meshtak_bridge import CONFIG_PATH
+        import json
+        with b._config_lock:
+            b.config = cfg
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+                f.write("\n")
+
+        return {"ok": True, "collector": collector}
 
     @app.post("/api/settings/tak/test")
     def test_tak():
@@ -338,9 +367,35 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"channels": channels}
 
     @app.get("/api/messages")
-    def get_messages():
+    def get_messages(
+        limit: int = 500,
+        node_id: str | None = None,
+        channel: str | None = None,
+        direction: str | None = None,
+        query: str | None = None,
+    ):
         b = _bridge_required()
-        return {"messages": b.store.get_messages()}
+        return {
+            "messages": b.store.get_messages(
+                limit=limit,
+                node_id=node_id,
+                channel=channel,
+                direction=direction,
+                query=query,
+            )
+        }
+
+    @app.post("/api/messages/purge")
+    def purge_messages(payload: PurgeMessagesRequest):
+        b = _bridge_required()
+        deleted = b.store.clear_messages(
+            node_id=payload.node_id,
+            channel=payload.channel,
+            direction=payload.direction,
+            query=payload.query,
+        )
+        remaining = len(b.store.get_messages(limit=5000))
+        return {"ok": True, "deleted": deleted, "remaining": remaining}
 
     @app.post("/api/messages/send")
     def send_message(payload: dict[str, Any] = Body(...)):
@@ -458,7 +513,7 @@ def _init_routes(
     signal_analyzer = SignalAnalyzer(coord.packet_repo)
     traffic_monitor = TrafficMonitor(coord.packet_repo)
 
-    nodes.init_routes(coord.node_repo, network_mapper)
+    nodes.init_routes(coord.node_repo, network_mapper, bridge)
     packets.init_routes(coord.packet_repo)
     analytics.init_routes(signal_analyzer, traffic_monitor, coord.packet_repo)
     device.init_routes(identity, ws_manager, coord.relay_manager)
