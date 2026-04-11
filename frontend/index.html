@@ -14,10 +14,6 @@
 </head>
 <body>
     <nav id="sidebar">
-        <div class="sb-brand">
-            <img src="/logo.svg" alt="MeshTAK" class="sb-logo-mark">
-        </div>
-
         <div class="sb-nav">
             <a href="#dashboard" class="sb-item active" data-view-link="dashboard">
                 <span class="sb-icon">[]</span>
@@ -48,15 +44,27 @@
         </div>
 
         <div class="sb-footer">
+            <div class="auth-box">
+                <div class="auth-status" id="auth-status">Not signed in</div>
+                <div class="auth-form" id="auth-form">
+                    <input id="auth-username" class="auth-input" type="text" placeholder="Username" autocomplete="username">
+                    <input id="auth-password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password">
+                    <button id="auth-login" class="auth-btn" type="button">Log In</button>
+                </div>
+                <button id="auth-logout" class="auth-btn hidden" type="button">Log Out</button>
+            </div>
             <div class="sb-version" id="version-badge">--</div>
-            <a id="update-badge" class="sb-update hidden" title="Update available" href="https://github.com/KMX415/meshpoint/blob/main/docs/ONBOARDING.md#updating" target="_blank" rel="noopener">Update Available</a>
+            <span id="update-badge" class="sb-update hidden" title="Update available">Update Available</span>
         </div>
     </nav>
 
     <main id="main">
         <header id="hdr">
             <div class="hdr-left">
-                <h1>MeshTAK</h1>
+                <h1 class="hdr-brand">
+                    <img src="/logo.svg" alt="" class="hdr-spear" aria-hidden="true">
+                    <span>MeshTAK</span>
+                </h1>
                 <span class="hdr-node" id="device-name">Command Mesh</span>
             </div>
             <div class="hdr-right">
@@ -378,6 +386,33 @@
                     <button id="system-refresh-settings" class="settings-btn" type="button">Reload Settings</button>
                 </div>
                 <div id="system-settings-status" class="settings-status"></div>
+            </section>
+
+            <section id="admin-accounts-section" class="settings-section hidden">
+                <h3 class="settings-section__title">User Accounts</h3>
+                <div class="settings-grid">
+                    <div class="settings-field">
+                        <label for="account-username">Username</label>
+                        <input id="account-username" type="text" placeholder="operator01" autocomplete="off">
+                    </div>
+                    <div class="settings-field">
+                        <label for="account-role">Role</label>
+                        <select id="account-role">
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="settings-field settings-field--full">
+                        <label for="account-password">Password</label>
+                        <input id="account-password" type="password" placeholder="Set a strong password" autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="settings-actions">
+                    <button id="account-create" class="settings-btn settings-btn--primary" type="button">Create Account</button>
+                    <button id="account-refresh" class="settings-btn" type="button">Refresh Accounts</button>
+                </div>
+                <div id="account-settings-status" class="settings-status">Admin login required</div>
+                <div id="account-list" class="account-list"></div>
             </section>
         </div>
     </aside>

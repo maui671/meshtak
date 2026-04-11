@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
+import os
+import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -43,6 +49,12 @@ _runtime_state: dict[str, dict[str, Any]] = {
     "collector": {"status": "unknown"},
     "radio": {"status": "unknown"},
 }
+_auth_sessions: dict[str, dict[str, Any]] = {}
+AUTH_COOKIE_NAME = "meshtak_session"
+AUTH_SESSION_TTL = 24 * 60 * 60
+USER_STORE_PATH = "/opt/meshtak/data/users.json"
+DEFAULT_ADMIN_USERNAME = "tdcadmin"
+DEFAULT_ADMIN_PASSWORD = "TDCnccd_dep10yed!"
 
 
 class PurgeMessagesRequest(BaseModel):
@@ -50,6 +62,105 @@ class PurgeMessagesRequest(BaseModel):
     channel: str | None = None
     direction: str | None = None
     query: str | None = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserAccountRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    return f"{salt}${digest}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        salt, digest = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    candidate = _hash_password(password, salt).split("$", 1)[1]
+    return hmac.compare_digest(candidate, digest)
+
+
+def _ensure_user_store() -> dict[str, Any]:
+    os.makedirs(os.path.dirname(USER_STORE_PATH), exist_ok=True)
+    if not os.path.exists(USER_STORE_PATH):
+        users = {
+            DEFAULT_ADMIN_USERNAME: {
+                "username": DEFAULT_ADMIN_USERNAME,
+                "role": "admin",
+                "password_hash": _hash_password(os.getenv("MESHTAK_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)),
+                "created_at": int(time.time()),
+            },
+        }
+        _save_user_store({"users": users})
+
+    with open(USER_STORE_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not isinstance(data.get("users"), dict):
+        raise HTTPException(status_code=500, detail="Invalid MeshTAK user store")
+    users = data.get("users", {})
+    legacy_admin = users.get("admin")
+    if (
+        DEFAULT_ADMIN_USERNAME not in users
+        and isinstance(legacy_admin, dict)
+        and legacy_admin.get("role") == "admin"
+        and _verify_password("admin", str(legacy_admin.get("password_hash", "")))
+    ):
+        users.pop("admin", None)
+        users[DEFAULT_ADMIN_USERNAME] = {
+            "username": DEFAULT_ADMIN_USERNAME,
+            "role": "admin",
+            "password_hash": _hash_password(os.getenv("MESHTAK_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)),
+            "created_at": int(time.time()),
+        }
+        _save_user_store(data)
+    return data
+
+
+def _save_user_store(data: dict[str, Any]) -> None:
+    with open(USER_STORE_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def _current_auth_user(request: Request) -> dict[str, Any] | None:
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        return None
+    session = _auth_sessions.get(token)
+    if not session:
+        return None
+    if int(session.get("expires_at", 0)) < int(time.time()):
+        _auth_sessions.pop(token, None)
+        return None
+    return {
+        "username": session.get("username", ""),
+        "role": session.get("role", "user"),
+    }
+
+
+def _require_admin(request: Request) -> dict[str, Any]:
+    user = _current_auth_user(request)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin login required")
+    return user
+
+
+def _public_user_record(username: str, user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "username": str(user.get("username") or username),
+        "role": str(user.get("role") or "user"),
+        "created_at": user.get("created_at"),
+    }
 
 
 def _normalize_port(value: Any, default: int) -> int:
@@ -180,6 +291,118 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/settings")
     def get_settings():
         return _build_settings_payload()
+
+    @app.get("/api/auth/status")
+    def auth_status(request: Request):
+        user = _current_auth_user(request)
+        if not user:
+            return {"authenticated": False, "role": "", "username": "", "show_update_notices": False}
+        return {
+            "authenticated": True,
+            "role": user.get("role", "user"),
+            "username": user.get("username", ""),
+            "show_update_notices": user.get("role") == "admin",
+        }
+
+    @app.post("/api/auth/login")
+    def auth_login(payload: LoginRequest, response: Response):
+        users = _ensure_user_store().get("users", {})
+        username = payload.username.strip()
+        user = users.get(username)
+        if not user or not _verify_password(payload.password, str(user.get("password_hash", ""))):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+
+        token = secrets.token_urlsafe(32)
+        _auth_sessions[token] = {
+            "username": username,
+            "role": user.get("role", "user"),
+            "expires_at": int(time.time()) + AUTH_SESSION_TTL,
+        }
+        response.set_cookie(
+            AUTH_COOKIE_NAME,
+            token,
+            httponly=True,
+            samesite="lax",
+            max_age=AUTH_SESSION_TTL,
+        )
+        return {
+            "ok": True,
+            "authenticated": True,
+            "username": username,
+            "role": user.get("role", "user"),
+            "show_update_notices": user.get("role") == "admin",
+        }
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request, response: Response):
+        token = request.cookies.get(AUTH_COOKIE_NAME)
+        if token:
+            _auth_sessions.pop(token, None)
+        response.delete_cookie(AUTH_COOKIE_NAME)
+        return {"ok": True, "authenticated": False, "role": "", "username": "", "show_update_notices": False}
+
+    @app.get("/api/auth/users")
+    def list_users(request: Request):
+        _require_admin(request)
+        users = _ensure_user_store().get("users", {})
+        return {
+            "users": [
+                _public_user_record(username, user)
+                for username, user in sorted(users.items(), key=lambda item: item[0].lower())
+            ]
+        }
+
+    @app.post("/api/auth/users")
+    def create_user(payload: UserAccountRequest, request: Request):
+        _require_admin(request)
+        username = payload.username.strip()
+        password = payload.password
+        role = payload.role.strip().lower()
+
+        if not username:
+            raise HTTPException(status_code=400, detail="Username is required")
+        if not password:
+            raise HTTPException(status_code=400, detail="Password is required")
+        if role not in {"admin", "user"}:
+            raise HTTPException(status_code=400, detail="Role must be admin or user")
+
+        data = _ensure_user_store()
+        users = data.setdefault("users", {})
+        if username in users:
+            raise HTTPException(status_code=409, detail="User already exists")
+
+        users[username] = {
+            "username": username,
+            "role": role,
+            "password_hash": _hash_password(password),
+            "created_at": int(time.time()),
+        }
+        _save_user_store(data)
+        return {"ok": True, "user": _public_user_record(username, users[username])}
+
+    @app.delete("/api/auth/users/{username}")
+    def delete_user(username: str, request: Request):
+        current_user = _require_admin(request)
+        data = _ensure_user_store()
+        users = data.setdefault("users", {})
+
+        if username not in users:
+            raise HTTPException(status_code=404, detail="User not found")
+        if username == current_user.get("username"):
+            raise HTTPException(status_code=400, detail="You cannot delete your active admin account")
+
+        user = users.get(username, {})
+        if user.get("role") == "admin":
+            admin_count = sum(1 for account in users.values() if account.get("role") == "admin")
+            if admin_count <= 1:
+                raise HTTPException(status_code=400, detail="Cannot delete the last admin account")
+
+        users.pop(username, None)
+        for token, session in list(_auth_sessions.items()):
+            if session.get("username") == username:
+                _auth_sessions.pop(token, None)
+        _save_user_store(data)
+        return {"ok": True, "deleted": username}
 
     @app.post("/api/settings/tak")
     def save_tak(payload: dict[str, Any] = Body(...)):

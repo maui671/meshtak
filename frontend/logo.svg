@@ -1,26 +1,62 @@
-<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MeshTAK">
+
+<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MeshTAK cut-through spear logo">
+<svg width="420" height="92" viewBox="0 0 420 92" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MeshTAK spear">
   <defs>
-    <linearGradient id="wing" x1="24" y1="26" x2="156" y2="154" gradientUnits="userSpaceOnUse">
+    <linearGradient id="shieldBlue" x1="24" y1="24" x2="156" y2="156" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#d9f0ff"/>
-      <stop offset="0.45" stop-color="#6db6ff"/>
-      <stop offset="1" stop-color="#1f6fd1"/>
+      <stop offset="0.48" stop-color="#4fa5ff"/>
+      <stop offset="1" stop-color="#0e4f9f"/>
+    <linearGradient id="spearEdge" x1="18" y1="46" x2="402" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#182817"/>
+      <stop offset="0.24" stop-color="#9fbf70"/>
+      <stop offset="0.58" stop-color="#e8f5b5"/>
+      <stop offset="1" stop-color="#74a94b"/>
     </linearGradient>
-    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="4" result="blur"/>
+    <linearGradient id="spearBlue" x1="22" y1="91" x2="158" y2="91" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b2344"/>
+      <stop offset="0.28" stop-color="#83c4ff"/>
+      <stop offset="0.72" stop-color="#d9f0ff"/>
+      <stop offset="1" stop-color="#2f8cff"/>
+    </linearGradient>
+    <filter id="signalGlow" x="-35%" y="-60%" width="170%" height="220%">
+      <feGaussianBlur stdDeviation="3.2" result="blur"/>
+    <filter id="glow" x="-10%" y="-80%" width="120%" height="260%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
       <feMerge>
         <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
-      </feMerge>
     </filter>
   </defs>
-  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M90 20 151 150 90 120 29 150 90 20Z" fill="rgba(31,111,209,0.16)" stroke="url(#wing)" stroke-width="7" filter="url(#glow)"/>
-    <path d="M90 20v100" stroke="#d9f0ff" stroke-width="5"/>
-    <path d="M52 102 90 82l38 20" stroke="#83c4ff" stroke-width="5"/>
-    <circle cx="90" cy="82" r="8" fill="#d9f0ff" stroke="#2f8cff" stroke-width="3"/>
-    <circle cx="52" cy="102" r="6" fill="#83c4ff"/>
-    <circle cx="128" cy="102" r="6" fill="#83c4ff"/>
-    <path d="M62 45c17-15 39-15 56 0" stroke="#9bdcff" stroke-width="4" opacity="0.8"/>
-    <path d="M47 61c27-25 59-25 86 0" stroke="#6db6ff" stroke-width="4" opacity="0.55"/>
+  <path d="M90 13 146 34 160 91 146 146 90 167 34 146 20 91 34 34 90 13Z" fill="#071222" stroke="url(#shieldBlue)" stroke-width="5"/>
+  <path d="M90 25 137 43 149 91 137 137 90 155 43 137 31 91 43 43 90 25Z" fill="none" stroke="#83c4ff" stroke-width="2" opacity="0.42"/>
+  <path d="M39 63h55l12-10h31" fill="none" stroke="#2f8cff" stroke-width="3" opacity="0.36"/>
+  <path d="M39 119h55l12 10h31" fill="none" stroke="#2f8cff" stroke-width="3" opacity="0.28"/>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <path d="M24 94h93" stroke="#d9f0ff" stroke-width="8"/>
+    <path d="M24 94h93" stroke="url(#spearBlue)" stroke-width="5"/>
+    <path d="M118 77 160 91 118 105 128 92 118 77Z" fill="#0b2344" stroke="url(#spearBlue)" stroke-width="5"/>
+    <path d="M128 92h-15" stroke="#d9f0ff" stroke-width="4"/>
+    <path d="M102 83h18" stroke="#071222" stroke-width="5"/>
+    <path d="M101 83h18" stroke="#83c4ff" stroke-width="2.8"/>
+    <path d="M93 82h5M86 83h4M78 84h4" stroke="#d9f0ff" stroke-width="4"/>
+    <path d="M23 85h14M23 94h18M23 103h14" stroke="#83c4ff" stroke-width="3.5"/>
+  </g>
+  <path d="M52 94c8 0 9-8 13-8 6 0 5 29 13 29 7 0 8-49 16-49 9 0 8 61 18 61 8 0 9-33 17-33" fill="none" stroke="#9bdcff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" filter="url(#signalGlow)"/>
+  <path d="M52 94c8 0 9-8 13-8 6 0 5 29 13 29 7 0 8-49 16-49 9 0 8 61 18 61 8 0 9-33 17-33" fill="none" stroke="#eef7ff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#83c4ff" opacity="0.92">
+    <path d="M54 39 83 48 65 51 80 62 49 52 67 50 54 39Z"/>
+    <path d="M126 39 97 48 115 51 100 62 131 52 113 50 126 39Z"/>
+    <path d="M50 128 80 119 65 132 82 134 51 143 66 132 50 128Z"/>
+    <path d="M130 128 100 119 115 132 98 134 129 143 114 132 130 128Z"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M18 48h282" stroke="#e8f5b5" stroke-width="12"/>
+    <path d="M18 48h282" stroke="url(#spearEdge)" stroke-width="7"/>
+    <path d="M306 23 402 46 306 69 328 48 306 23Z" fill="#0a120b" stroke="url(#spearEdge)" stroke-width="8"/>
+    <path d="M328 48h-54" stroke="#e8f5b5" stroke-width="5"/>
+    <path d="M66 48c22 0 25-20 38-20 20 0 17 62 39 62 21 0 20-86 43-86 25 0 22 86 48 86 21 0 24-42 44-42" stroke="#bfe98b" stroke-width="10"/>
+    <path d="M66 48c22 0 25-20 38-20 20 0 17 62 39 62 21 0 20-86 43-86 25 0 22 86 48 86 21 0 24-42 44-42" stroke="#f4ffd2" stroke-width="4"/>
+    <path d="M24 32h38M24 48h48M24 64h38" stroke="#9fbf70" stroke-width="5"/>
+    <path d="M250 31h42" stroke="#0a120b" stroke-width="7"/>
+    <path d="M252 31h38" stroke="#bfe98b" stroke-width="3.5"/>
   </g>
 </svg>

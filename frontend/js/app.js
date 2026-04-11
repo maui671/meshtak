@@ -31,6 +31,7 @@ let latestRadioNodes = [];
 let latestChannels = [];
 let latestDevice = null;
 let latestSettings = {};
+let latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
 
 document.addEventListener('DOMContentLoaded', async () => {
     const nodeMap = new NodeMap('map');
@@ -50,8 +51,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     _bindDashboardWorkspace(nodeMap);
     _bindCommandShell(nodeMap);
     _bindSettingsControls();
+    _bindAuthControls();
+    _bindUserAccountControls();
     _startCommandClock();
 
+    await _refreshAuthStatus();
     await _loadInitial(nodeMap, nodeList, packetFeed);
     await _updateStats();
     await _refreshRadioUi();
@@ -1236,11 +1240,16 @@ function _formatUptime(totalSeconds) {
 }
 
 async function _checkForUpdate() {
+    const badge = document.getElementById('update-badge');
+    if (!badge || !latestAuth.show_update_notices) {
+        if (badge) {
+            badge.classList.add('hidden');
+        }
+        return;
+    }
     try {
         const res = await fetch('/api/device/update-check');
         const data = await res.json();
-        const badge = document.getElementById('update-badge');
-        if (!badge) return;
         if (data.update_available) {
             badge.classList.remove('hidden');
             badge.title = `Update available (local: ${data.local_version}, remote: ${data.remote_version})`;
@@ -1248,6 +1257,244 @@ async function _checkForUpdate() {
             badge.classList.add('hidden');
         }
     } catch (_) {}
+}
+
+function _bindAuthControls() {
+    const loginBtn = document.getElementById('auth-login');
+    const logoutBtn = document.getElementById('auth-logout');
+    const password = document.getElementById('auth-password');
+
+    if (loginBtn) {
+        loginBtn.addEventListener('click', _login);
+    }
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', _logout);
+    }
+    if (password) {
+        password.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                _login();
+            }
+        });
+    }
+}
+
+function _bindUserAccountControls() {
+    const createBtn = document.getElementById('account-create');
+    const refreshBtn = document.getElementById('account-refresh');
+    const password = document.getElementById('account-password');
+
+    if (createBtn) {
+        createBtn.addEventListener('click', _createUserAccount);
+    }
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', _loadUserAccounts);
+    }
+    if (password) {
+        password.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                _createUserAccount();
+            }
+        });
+    }
+}
+
+async function _refreshAuthStatus() {
+    try {
+        const response = await fetch('/api/auth/status');
+        latestAuth = await response.json();
+    } catch (_) {
+        latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
+    }
+    _renderAuthState();
+    await _loadUserAccounts();
+}
+
+async function _login() {
+    const username = document.getElementById('auth-username')?.value.trim() || '';
+    const password = document.getElementById('auth-password')?.value || '';
+    if (!username || !password) {
+        _setText('auth-status', 'Enter username and password');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Login failed');
+        }
+        latestAuth = data;
+        _setValue('auth-password', '');
+        _renderAuthState();
+        await _loadUserAccounts();
+        _checkForUpdate();
+    } catch (error) {
+        _setText('auth-status', error.message || 'Login failed');
+    }
+}
+
+async function _logout() {
+    try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (_) {}
+    latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
+    _renderAuthState();
+    _renderUserAccounts([]);
+    _checkForUpdate();
+}
+
+function _renderAuthState() {
+    const form = document.getElementById('auth-form');
+    const logout = document.getElementById('auth-logout');
+    const status = document.getElementById('auth-status');
+    const authenticated = !!latestAuth.authenticated;
+
+    if (form) {
+        form.classList.toggle('hidden', authenticated);
+    }
+    if (logout) {
+        logout.classList.toggle('hidden', !authenticated);
+    }
+    if (status) {
+        status.textContent = authenticated
+            ? `${latestAuth.username || 'user'} / ${latestAuth.role || 'user'}`
+            : 'Not signed in';
+    }
+}
+
+async function _loadUserAccounts() {
+    const section = document.getElementById('admin-accounts-section');
+    const isAdmin = latestAuth.authenticated && latestAuth.role === 'admin';
+    if (section) {
+        section.classList.toggle('hidden', !isAdmin);
+    }
+    if (!isAdmin) {
+        _renderUserAccounts([]);
+        _setText('account-settings-status', 'Admin login required');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/auth/users');
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Unable to load accounts');
+        }
+        _renderUserAccounts(data.users || []);
+        _setText('account-settings-status', 'Accounts loaded');
+    } catch (error) {
+        _setText('account-settings-status', error.message || 'Unable to load accounts');
+    }
+}
+
+async function _createUserAccount() {
+    const username = document.getElementById('account-username')?.value.trim() || '';
+    const password = document.getElementById('account-password')?.value || '';
+    const role = document.getElementById('account-role')?.value || 'user';
+
+    if (!latestAuth.authenticated || latestAuth.role !== 'admin') {
+        _setText('account-settings-status', 'Admin login required');
+        return;
+    }
+    if (!username || !password) {
+        _setText('account-settings-status', 'Enter username and password');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/auth/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, role }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Unable to create account');
+        }
+        _setValue('account-username', '');
+        _setValue('account-password', '');
+        _setValue('account-role', 'user');
+        _setText('account-settings-status', `Created ${data.user?.username || username}`);
+        await _loadUserAccounts();
+    } catch (error) {
+        _setText('account-settings-status', error.message || 'Unable to create account');
+    }
+}
+
+function _renderUserAccounts(users) {
+    const list = document.getElementById('account-list');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+
+    if (!users.length) {
+        const empty = document.createElement('div');
+        empty.className = 'account-list__empty';
+        empty.textContent = 'No accounts loaded';
+        list.appendChild(empty);
+        return;
+    }
+
+    users.forEach((user) => {
+        const item = document.createElement('div');
+        item.className = 'account-item';
+
+        const name = document.createElement('span');
+        name.className = 'account-item__name';
+        name.textContent = user.username || 'unknown';
+
+        const role = document.createElement('span');
+        role.className = user.role === 'admin' ? 'account-item__role account-item__role--admin' : 'account-item__role';
+        role.textContent = user.role || 'user';
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'account-item__delete';
+        deleteBtn.type = 'button';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.disabled = latestAuth.username === user.username;
+        deleteBtn.title = deleteBtn.disabled ? 'You cannot delete the active login' : `Delete ${user.username}`;
+        deleteBtn.addEventListener('click', () => _deleteUserAccount(user.username));
+
+        item.appendChild(name);
+        item.appendChild(role);
+        item.appendChild(deleteBtn);
+        list.appendChild(item);
+    });
+}
+
+async function _deleteUserAccount(username) {
+    if (!username) {
+        return;
+    }
+    if (!latestAuth.authenticated || latestAuth.role !== 'admin') {
+        _setText('account-settings-status', 'Admin login required');
+        return;
+    }
+    if (latestAuth.username === username) {
+        _setText('account-settings-status', 'You cannot delete the active login');
+        return;
+    }
+    if (!confirm(`Delete account "${username}"?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/auth/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Unable to delete account');
+        }
+        _setText('account-settings-status', `Deleted ${data.deleted || username}`);
+        await _loadUserAccounts();
+    } catch (error) {
+        _setText('account-settings-status', error.message || 'Unable to delete account');
+    }
 }
 
 function _bindCommandShell(nodeMap) {
