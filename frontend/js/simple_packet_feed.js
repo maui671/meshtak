@@ -10,6 +10,12 @@ class SimplePacketFeed {
         this._countEl = document.getElementById(options.countId || 'packet-count');
         this._statusEl = document.getElementById(options.statusId || 'packet-feed-status');
         this._maxRows = options.maxRows || 500;
+        this._nodeLabelResolver = typeof options.nodeLabelResolver === 'function'
+            ? options.nodeLabelResolver
+            : null;
+        this._nodeMatcher = typeof options.nodeMatcher === 'function'
+            ? options.nodeMatcher
+            : null;
         this._packets = [];
         this._filters = {
             nodeId: '',
@@ -75,6 +81,10 @@ class SimplePacketFeed {
 
     getTotalCount() {
         return this._packets.length;
+    }
+
+    refreshLabels() {
+        this._render({ preserveAnchor: true });
     }
 
     _render({ preserveAnchor = false, resetScroll = false } = {}) {
@@ -159,9 +169,9 @@ class SimplePacketFeed {
 
         return (packets || []).filter((packet) => {
             if (nodeId) {
-                const sourceId = String(packet.source_id || '').trim();
-                const destinationId = String(packet.destination_id || '').trim();
-                if (sourceId !== nodeId && destinationId !== nodeId) {
+                const matchesSource = this._nodeMatches(packet.source_id, nodeId);
+                const matchesDestination = this._nodeMatches(packet.destination_id, nodeId);
+                if (!matchesSource && !matchesDestination) {
                     return false;
                 }
             }
@@ -179,6 +189,8 @@ class SimplePacketFeed {
                 const haystack = [
                     packet.source_id || '',
                     packet.destination_id || '',
+                    this._nodeLabel(packet.source_id),
+                    this._nodeLabel(packet.destination_id),
                     packet.protocol || '',
                     packet.packet_type || '',
                     details,
@@ -202,8 +214,8 @@ class SimplePacketFeed {
                 ? new Date(packet.timestamp).toLocaleTimeString()
                 : new Date().toLocaleTimeString();
 
-        const srcShort = this._shortId(packet.source_id);
-        const destShort = this._shortId(packet.destination_id);
+        const srcShort = this._nodeLabel(packet.source_id);
+        const destShort = this._nodeLabel(packet.destination_id);
         const sig = packet.signal || {};
         const rawRssi = sig.rssi != null ? sig.rssi : packet.rssi;
         const rawSnr = sig.snr != null ? sig.snr : packet.snr;
@@ -224,8 +236,8 @@ class SimplePacketFeed {
         tr.innerHTML = `
             <td>${time}</td>
             <td class="${protocolClass}">${protocol}</td>
-            <td class="td-source">${srcShort}</td>
-            <td>${destShort}</td>
+            <td class="td-source">${this._esc(srcShort)}</td>
+            <td>${this._esc(destShort)}</td>
             <td class="${typeClass}">${type}</td>
             <td class="${rssiClass}">${rssi}</td>
             <td>${snr}</td>
@@ -258,7 +270,7 @@ class SimplePacketFeed {
         if (payload && typeof payload === 'object') {
             td.textContent = JSON.stringify(payload, null, 2);
         } else {
-            td.textContent = `Source: ${packet.source_id || '--'}\nType: ${packet.packet_type || '--'}\nRSSI: ${packet.rssi || '--'} dBm\nSNR: ${packet.snr || '--'} dB`;
+            td.textContent = `Source: ${this._nodeLabel(packet.source_id)}\nType: ${packet.packet_type || '--'}\nRSSI: ${packet.rssi || '--'} dBm\nSNR: ${packet.snr || '--'} dB`;
         }
 
         detailTr.appendChild(td);
@@ -329,6 +341,23 @@ class SimplePacketFeed {
             return 'BCAST';
         }
         return id.length > 6 ? `!${id.slice(-4)}` : id;
+    }
+
+    _nodeLabel(id) {
+        if (this._nodeLabelResolver) {
+            const label = this._nodeLabelResolver(id);
+            if (label) {
+                return label;
+            }
+        }
+        return this._shortId(String(id || '').trim());
+    }
+
+    _nodeMatches(packetNodeId, filterNodeId) {
+        if (this._nodeMatcher) {
+            return this._nodeMatcher(packetNodeId, filterNodeId);
+        }
+        return String(packetNodeId || '').trim() === String(filterNodeId || '').trim();
     }
 
     _esc(str) {

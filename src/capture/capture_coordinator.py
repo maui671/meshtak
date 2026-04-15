@@ -32,7 +32,14 @@ class CaptureCoordinator:
     async def start(self) -> None:
         self._running = True
         for source in self._sources:
-            await source.start()
+            try:
+                await source.start()
+            except Exception:
+                logger.exception(
+                    "Capture source %s failed to start; continuing without it",
+                    source.name,
+                )
+                continue
             task = asyncio.create_task(
                 self._run_source(source),
                 name=f"capture-{source.name}",

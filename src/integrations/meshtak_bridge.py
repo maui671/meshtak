@@ -263,6 +263,18 @@ class MeshTakBridge:
             self.radio_lock.release()
         return {}
 
+    @staticmethod
+    def _is_portnum(portnum: Any, name: str, numeric_value: Optional[int] = None) -> bool:
+        if portnum == name:
+            return True
+        if numeric_value is not None:
+            try:
+                if int(portnum) == numeric_value:
+                    return True
+            except Exception:
+                pass
+        return name in str(portnum or "").upper()
+
     def on_receive(self, packet, interface) -> None:
         try:
             decoded = packet.get("decoded", {}) or {}
@@ -274,17 +286,17 @@ class MeshTakBridge:
                 return
             user = decoded.get("user") or packet.get("user") or self._extract_user_from_interface(from_id) or {}
             if isinstance(user, dict) and user:
-                self.store.upsert_node(from_id, long_name=user.get("longName"), short_name=user.get("shortName"), hw_model=user.get("hwModel"), role=user.get("role"), last_heard=rx_time, via="heltec", raw=packet)
-            if portnum == "POSITION_APP":
+                self.store.upsert_node(from_id, long_name=user.get("longName"), short_name=user.get("shortName"), hw_model=user.get("hwModel"), role=user.get("role"), last_heard=rx_time, via="heltec", raw=packet, reveal_hidden=True)
+            if self._is_portnum(portnum, "POSITION_APP", 3):
                 pos = decoded.get("position", {}) or {}
                 lat = pos.get("latitude")
                 lon = pos.get("longitude")
                 alt = pos.get("altitude")
                 if lat is not None and lon is not None:
-                    node = self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, lat=lat, lon=lon, alt=alt, last_heard=rx_time, via="heltec", raw=packet)
+                    node = self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, lat=lat, lon=lon, alt=alt, last_heard=rx_time, via="heltec", raw=packet, reveal_hidden=True)
                     if self._tak_enabled():
                         self.store.enqueue_tak(self.build_cot(node), event_type="position", node_id=from_id)
-            elif portnum == "TEXT_MESSAGE_APP":
+            elif self._is_portnum(portnum, "TEXT_MESSAGE_APP", 1):
                 text = decoded.get("text", "")
                 channel = str(packet.get("channel") or decoded.get("channel") or "")
                 self.store.add_message(
@@ -298,9 +310,9 @@ class MeshTakBridge:
                     hop_limit=packet.get("hopLimit") or packet.get("hop_limit"),
                     raw=packet,
                 )
-                self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, last_heard=rx_time, via="heltec", raw=packet)
+                self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, last_heard=rx_time, via="heltec", raw=packet, reveal_hidden=True)
             else:
-                self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, last_heard=rx_time, via="heltec", raw=packet)
+                self.store.upsert_node(from_id, long_name=user.get("longName") if isinstance(user, dict) else None, short_name=user.get("shortName") if isinstance(user, dict) else None, hw_model=user.get("hwModel") if isinstance(user, dict) else None, role=user.get("role") if isinstance(user, dict) else None, last_heard=rx_time, via="heltec", raw=packet, reveal_hidden=True)
         except Exception as exc:
             log.exception("Error processing active radio packet: %s", exc)
 
@@ -349,9 +361,10 @@ class MeshTakBridge:
                 last_heard=int(time.time()),
                 via='wm1303',
                 raw=pkt,
+                reveal_hidden=True,
             )
             if not node.get('display_name'):
-                self.store.upsert_node(source_id, short_name=raw_name, via='wm1303', last_heard=int(time.time()), raw=pkt)
+                self.store.upsert_node(source_id, short_name=raw_name, via='wm1303', last_heard=int(time.time()), raw=pkt, reveal_hidden=True)
                 node = next((n for n in self.store.get_nodes() if n.get('node_id') == source_id), node)
             if self._tak_enabled() and lat is not None and lon is not None:
                 self.store.enqueue_tak(self.build_cot(node), event_type='position', node_id=source_id)

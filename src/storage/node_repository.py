@@ -18,6 +18,23 @@ class NodeRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
 
+    @staticmethod
+    def _node_id_variants(node_id: str) -> list[str]:
+        value = str(node_id or "").strip()
+        if not value:
+            return []
+
+        variants = {value}
+        if value.startswith("!"):
+            variants.add(value[1:])
+        else:
+            variants.add(f"!{value}")
+        variants.add(value.lower())
+        if value.startswith("!"):
+            variants.add(f"!{value[1:].lower()}")
+            variants.add(value[1:].lower())
+        return sorted(v for v in variants if v)
+
     async def upsert(self, node: Node) -> None:
         await self._db.execute(
             """
@@ -130,16 +147,26 @@ class NodeRepository:
         await self._db.commit()
 
     async def delete_by_id(self, node_id: str) -> int:
+        variants = self._node_id_variants(node_id)
+        if not variants:
+            return 0
+        placeholders = ", ".join("?" for _ in variants)
         cursor = await self._db.execute(
-            "DELETE FROM nodes WHERE node_id = ?",
-            (node_id,),
+            f"DELETE FROM nodes WHERE node_id IN ({placeholders})",
+            tuple(variants),
         )
         deleted = cursor.rowcount
         await self._db.commit()
         return max(0, deleted)
 
     async def delete_many(self, node_ids: list[str]) -> int:
-        cleaned = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
+        cleaned = sorted(
+            {
+                variant
+                for node_id in node_ids
+                for variant in self._node_id_variants(str(node_id).strip())
+            }
+        )
         if not cleaned:
             return 0
         placeholders = ", ".join("?" for _ in cleaned)

@@ -36,6 +36,15 @@ def _normalize(value: str | None) -> str:
     return v if v.startswith('!') else f'!{v}'
 
 
+def _is_hidden_node(node_id: str | None) -> bool:
+    if not _bridge:
+        return False
+    store = getattr(_bridge, "store", None)
+    if not store or not hasattr(store, "is_node_hidden"):
+        return False
+    return bool(store.is_node_hidden(node_id))
+
+
 def _last_heard_sort_value(value) -> int:
     if isinstance(value, (int, float)):
         return int(value)
@@ -113,13 +122,13 @@ async def list_nodes(limit: int = 500, enrich: bool = True):
 
     for node in nodes:
         normalized_id = _normalize(node.get("node_id"))
-        if not normalized_id:
+        if not normalized_id or _is_hidden_node(normalized_id):
             continue
         merged[normalized_id] = _overlay_meshtak(node)
 
     for node in _meshtak_only_nodes():
         normalized_id = _normalize(node.get("node_id"))
-        if not normalized_id or normalized_id in merged:
+        if not normalized_id or _is_hidden_node(normalized_id) or normalized_id in merged:
             continue
         merged[normalized_id] = node
 
@@ -140,12 +149,12 @@ async def node_count():
     for node in repo_nodes:
         node_dict = _overlay_meshtak(node.to_dict())
         normalized_id = _normalize(node_dict.get("node_id"))
-        if normalized_id:
+        if normalized_id and not _is_hidden_node(normalized_id):
             merged[normalized_id] = node_dict
 
     for node in _meshtak_only_nodes():
         normalized_id = _normalize(node.get("node_id"))
-        if normalized_id and normalized_id not in merged:
+        if normalized_id and not _is_hidden_node(normalized_id) and normalized_id not in merged:
             merged[normalized_id] = node
 
     active_cutoff = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp())
@@ -161,9 +170,9 @@ async def node_count():
 async def map_data():
     data = await _network_mapper.get_map_data()
     if isinstance(data, list):
-        return [_overlay_meshtak(n) for n in data]
+        return [_overlay_meshtak(n) for n in data if not _is_hidden_node(n.get("node_id"))]
     if isinstance(data, dict) and 'nodes' in data:
-        data['nodes'] = [_overlay_meshtak(n) for n in data['nodes']]
+        data['nodes'] = [_overlay_meshtak(n) for n in data['nodes'] if not _is_hidden_node(n.get("node_id"))]
     return data
 
 
@@ -174,7 +183,10 @@ async def network_summary():
 
 @router.get("/{node_id}")
 async def get_node(node_id: str):
-    node = await _node_repo.get_by_id(node_id)
+    normalized_id = _normalize(node_id)
+    if _is_hidden_node(normalized_id):
+        raise HTTPException(status_code=404, detail="Node not found")
+    node = await _node_repo.get_by_id(normalized_id)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
     return _overlay_meshtak(node.to_dict())

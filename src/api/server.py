@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import os
 import secrets
+import shlex
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -211,6 +214,225 @@ def _build_settings_payload() -> dict[str, Any]:
             "port": _normalize_port(radio_conn.get("port", 4403), 4403),
         },
     }
+
+
+def _write_bridge_config(b: MeshTakBridge, cfg: dict[str, Any]) -> None:
+    from src.integrations.meshtak_bridge import CONFIG_PATH
+
+    with b._config_lock:
+        b.config = cfg
+        Path(CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+
+
+def _runtime_yaml_config_path() -> Path:
+    return Path(os.environ.get("CONCENTRATOR_CONFIG", "/opt/meshtak/config/local.yaml"))
+
+
+def _read_runtime_yaml_config() -> dict[str, Any]:
+    import yaml
+
+    path = _runtime_yaml_config_path()
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_runtime_yaml_config(data: dict[str, Any]) -> None:
+    import yaml
+
+    path = _runtime_yaml_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+
+def _normalize_psk_b64(value: Any) -> str:
+    psk = str(value or "").strip()
+    if not psk:
+        raise HTTPException(status_code=400, detail="Channel PSK is required")
+    try:
+        decoded = base64.b64decode(psk, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Channel PSK must be valid base64") from exc
+    if len(decoded) not in {1, 16, 32}:
+        raise HTTPException(status_code=400, detail="Channel PSK must decode to 1, 16, or 32 bytes")
+    return base64.b64encode(decoded).decode("ascii")
+
+
+def _generate_psk_b64() -> str:
+    return base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+
+
+def _safe_channel_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Channel name is required")
+    if len(name) > 32:
+        raise HTTPException(status_code=400, detail="Channel name must be 32 characters or less")
+    return name
+
+
+def _normalize_channel_index(value: Any, default: int = 1) -> int:
+    try:
+        index = int(value)
+    except Exception:
+        index = default
+    if index < 0 or index > 7:
+        raise HTTPException(status_code=400, detail="Channel index must be between 0 and 7")
+    return index
+
+
+def _save_channel_key(name: str, psk_b64: str) -> dict[str, str]:
+    cfg = _read_runtime_yaml_config()
+    meshtastic = cfg.setdefault("meshtastic", {})
+    if not isinstance(meshtastic, dict):
+        meshtastic = {}
+        cfg["meshtastic"] = meshtastic
+    keys = meshtastic.setdefault("channel_keys", {})
+    if not isinstance(keys, dict):
+        keys = {}
+        meshtastic["channel_keys"] = keys
+    keys[name] = psk_b64
+    _write_runtime_yaml_config(cfg)
+
+    if pipeline is not None and hasattr(pipeline, "_crypto"):
+        crypto = getattr(pipeline, "_crypto", None)
+        if crypto is not None and hasattr(crypto, "add_channel_key"):
+            crypto.add_channel_key(name, psk_b64)
+
+    return {str(k): str(v) for k, v in keys.items()}
+
+
+def _upsert_bridge_channel(name: str, index: int, psk_b64: str | None = None, pinned: bool = False) -> list[dict[str, Any]]:
+    b = _bridge_required()
+    cfg = b.get_config()
+    channels = cfg.setdefault("channels", [])
+    if not isinstance(channels, list):
+        channels = []
+        cfg["channels"] = channels
+
+    existing = next((ch for ch in channels if int(ch.get("index", -1)) == index), None)
+    if existing is None:
+        existing = {}
+        channels.append(existing)
+    existing.update({"name": name, "index": index, "pinned": bool(pinned)})
+    if psk_b64:
+        existing["psk"] = psk_b64
+    _write_bridge_config(b, cfg)
+    return channels
+
+
+def _to_jsonable(value: Any, depth: int = 0) -> Any:
+    if depth > 5:
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v, depth + 1) for v in value]
+    for method_name in ("to_dict", "as_dict"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            try:
+                return _to_jsonable(method(), depth + 1)
+            except Exception:
+                pass
+    data = getattr(value, "__dict__", None)
+    if isinstance(data, dict):
+        return {
+            str(k): _to_jsonable(v, depth + 1)
+            for k, v in data.items()
+            if not str(k).startswith("_")
+        }
+    return str(value)
+
+
+def _radio_connection() -> dict[str, Any]:
+    cfg = _bridge_required().get_config()
+    active = cfg.get("meshtastic_active", {})
+    conn = active.get("connection") if isinstance(active, dict) else None
+    if not isinstance(conn, dict):
+        conn = cfg.get("connection", {})
+    return conn if isinstance(conn, dict) else {}
+
+
+def _meshtastic_cli_base_args() -> list[str]:
+    cli = "/opt/meshtak/venv/bin/meshtastic"
+    if not Path(cli).exists():
+        cli = "meshtastic"
+    conn = _radio_connection()
+    args = [cli]
+    connection_type = str(conn.get("type", "serial")).strip().lower()
+    if connection_type in {"tcp", "ip", "wifi"} and conn.get("host"):
+        args.extend(["--host", str(conn.get("host"))])
+    else:
+        port = conn.get("serial_port") or conn.get("port") or "/dev/ttyACM0"
+        args.extend(["--port", str(port)])
+    return args
+
+
+def _run_meshtastic_cli(extra_args: list[str], timeout: int = 60) -> dict[str, Any]:
+    command = _meshtastic_cli_base_args() + extra_args
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="meshtastic CLI was not found in the MeshTAK venv or PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="meshtastic CLI timed out while applying radio configuration") from exc
+
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "command": " ".join(shlex.quote(part) for part in command),
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def _mesh_channel_export(name: str, index: int, psk_b64: str) -> dict[str, Any]:
+    payload = {"name": name, "index": index, "psk": psk_b64, "format": "meshtak-channel-v1"}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+    return {
+        "name": name,
+        "index": index,
+        "psk": psk_b64,
+        "meshtak_url": f"meshtak://channel/{encoded}",
+        "json": payload,
+        "meshtastic_cli": f"meshtastic --ch-index {index} --ch-set name {shlex.quote(name)} --ch-set psk {shlex.quote(psk_b64)}",
+    }
+
+
+def _parse_mesh_channel_import(payload: dict[str, Any]) -> dict[str, Any]:
+    original = dict(payload)
+    raw = str(payload.get("url") or payload.get("import_text") or "").strip()
+    if raw.startswith("meshtak://channel/"):
+        token = raw.rsplit("/", 1)[-1]
+        padding = "=" * (-len(token) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode((token + padding).encode("ascii"))
+            data = json.loads(decoded.decode("utf-8"))
+            if isinstance(data, dict):
+                payload = {**payload, **data}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Unable to parse MeshTAK channel import URL") from exc
+    elif raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                payload = {**payload, **data}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Unable to parse channel import JSON") from exc
+
+    for key in ("name", "index", "psk"):
+        if original.get(key) not in (None, ""):
+            payload[key] = original[key]
+    return payload
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -589,6 +811,160 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             channels = [{"name": "Broadcast", "index": 0, "pinned": True}]
         return {"channels": channels}
 
+    @app.get("/api/radio/config")
+    def radio_config(request: Request):
+        _require_admin(request)
+        b = _bridge_required()
+        conn = _radio_connection()
+        cfg = b.get_config()
+        runtime_cfg = _read_runtime_yaml_config()
+        stored_keys = ((runtime_cfg.get("meshtastic") or {}).get("channel_keys") or {})
+        interface = b.interface
+        radio_snapshot: dict[str, Any] = {}
+        if interface is not None:
+            for attr in ("myInfo", "localNode", "nodes", "channels"):
+                try:
+                    radio_snapshot[attr] = _to_jsonable(getattr(interface, attr, None))
+                except Exception:
+                    radio_snapshot[attr] = None
+
+        return {
+            "connected": b.is_connected(),
+            "status": _runtime_state["radio"].get("status", "unknown"),
+            "connection": conn,
+            "channels": cfg.get("channels", []) or [{"name": "Broadcast", "index": 0, "pinned": True}],
+            "stored_channel_keys": {
+                str(name): {"name": str(name), "psk": str(psk), "masked": f"{str(psk)[:4]}...{str(psk)[-4:]}"}
+                for name, psk in stored_keys.items()
+            } if isinstance(stored_keys, dict) else {},
+            "radio": radio_snapshot,
+        }
+
+    @app.post("/api/radio/config/apply")
+    def radio_config_apply(request: Request, payload: dict[str, Any] = Body(...)):
+        _require_admin(request)
+        commands: list[dict[str, Any]] = []
+        cli_args: list[str] = []
+
+        long_name = str(payload.get("long_name") or payload.get("owner") or "").strip()
+        short_name = str(payload.get("short_name") or "").strip()
+        if long_name:
+            cli_args.extend(["--set-owner", long_name])
+        if short_name:
+            cli_args.extend(["--set-owner-short", short_name[:4]])
+
+        set_fields = {
+            "region": "lora.region",
+            "modem_preset": "lora.modem_preset",
+            "tx_power": "lora.tx_power",
+            "position_broadcast_secs": "position.position_broadcast_secs",
+        }
+        for payload_key, cli_key in set_fields.items():
+            value = payload.get(payload_key)
+            if value not in (None, ""):
+                cli_args.extend(["--set", cli_key, str(value)])
+
+        if not cli_args:
+            raise HTTPException(status_code=400, detail="No radio configuration changes were provided")
+
+        if bool(payload.get("dry_run", False)):
+            command = _meshtastic_cli_base_args() + cli_args
+            return {
+                "ok": True,
+                "dry_run": True,
+                "command": " ".join(shlex.quote(part) for part in command),
+            }
+
+        result = _run_meshtastic_cli(cli_args, timeout=90)
+        commands.append(result)
+        if not result["ok"]:
+            raise HTTPException(status_code=500, detail=result.get("stderr") or result.get("stdout") or "Radio CLI command failed")
+
+        return {"ok": True, "commands": commands}
+
+    @app.post("/api/radio/config/cli")
+    def radio_config_cli(request: Request, payload: dict[str, Any] = Body(...)):
+        _require_admin(request)
+        raw_args = str(payload.get("args") or "").strip()
+        if not raw_args:
+            raise HTTPException(status_code=400, detail="Meshtastic CLI arguments are required")
+        try:
+            args = shlex.split(raw_args)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to parse CLI arguments: {exc}") from exc
+
+        blocked = {"meshtastic", "sudo", "python", "python3", "bash", "sh"}
+        if args and Path(args[0]).name in blocked:
+            raise HTTPException(status_code=400, detail="Enter only Meshtastic arguments, not the command name")
+
+        if bool(payload.get("dry_run", False)):
+            command = _meshtastic_cli_base_args() + args
+            return {
+                "ok": True,
+                "dry_run": True,
+                "command": " ".join(shlex.quote(part) for part in command),
+            }
+
+        result = _run_meshtastic_cli(args, timeout=120)
+        if not result["ok"]:
+            raise HTTPException(status_code=500, detail=result.get("stderr") or result.get("stdout") or "Radio CLI command failed")
+        return {"ok": True, "command": result}
+
+    @app.post("/api/radio/channels/save-key")
+    def radio_channel_save_key(request: Request, payload: dict[str, Any] = Body(...)):
+        _require_admin(request)
+        name = _safe_channel_name(payload.get("name"))
+        index = _normalize_channel_index(payload.get("index"), 1)
+        psk_b64 = _normalize_psk_b64(payload.get("psk"))
+        _save_channel_key(name, psk_b64)
+        channels = _upsert_bridge_channel(name, index, psk_b64, bool(payload.get("pinned", False)))
+        return {"ok": True, "channels": channels, "export": _mesh_channel_export(name, index, psk_b64)}
+
+    @app.post("/api/radio/channels/create-private")
+    def radio_channel_create_private(request: Request, payload: dict[str, Any] = Body(...)):
+        _require_admin(request)
+        name = _safe_channel_name(payload.get("name"))
+        index = _normalize_channel_index(payload.get("index"), 1)
+        psk_b64 = _normalize_psk_b64(payload.get("psk") or _generate_psk_b64())
+        _save_channel_key(name, psk_b64)
+        channels = _upsert_bridge_channel(name, index, psk_b64, bool(payload.get("pinned", False)))
+
+        command_result = None
+        if bool(payload.get("apply_to_radio", False)):
+            command_result = _run_meshtastic_cli(["--ch-index", str(index), "--ch-set", "name", name, "--ch-set", "psk", psk_b64], timeout=90)
+            if not command_result["ok"]:
+                raise HTTPException(status_code=500, detail=command_result.get("stderr") or command_result.get("stdout") or "Radio channel command failed")
+
+        return {
+            "ok": True,
+            "channels": channels,
+            "command": command_result,
+            "export": _mesh_channel_export(name, index, psk_b64),
+        }
+
+    @app.post("/api/radio/channels/import")
+    def radio_channel_import(request: Request, payload: dict[str, Any] = Body(...)):
+        _require_admin(request)
+        payload = _parse_mesh_channel_import(payload)
+        name = _safe_channel_name(payload.get("name"))
+        index = _normalize_channel_index(payload.get("index"), 1)
+        psk_b64 = _normalize_psk_b64(payload.get("psk"))
+        _save_channel_key(name, psk_b64)
+        channels = _upsert_bridge_channel(name, index, psk_b64, bool(payload.get("pinned", False)))
+
+        command_result = None
+        if bool(payload.get("apply_to_radio", False)):
+            command_result = _run_meshtastic_cli(["--ch-index", str(index), "--ch-set", "name", name, "--ch-set", "psk", psk_b64], timeout=90)
+            if not command_result["ok"]:
+                raise HTTPException(status_code=500, detail=command_result.get("stderr") or command_result.get("stdout") or "Radio channel command failed")
+
+        return {
+            "ok": True,
+            "channels": channels,
+            "command": command_result,
+            "export": _mesh_channel_export(name, index, psk_b64),
+        }
+
     @app.get("/api/messages")
     def get_messages(
         limit: int = 500,
@@ -663,7 +1039,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 def _build_pipeline(config: AppConfig) -> PipelineCoordinator:
     coordinator = PipelineCoordinator(config)
 
-    for source_name in config.capture.sources:
+    capture_sources = list(config.capture.sources or [])
+
+    for source_name in capture_sources:
         if source_name == "serial":
             _add_serial_source(coordinator, config)
         elif source_name == "concentrator":
@@ -672,7 +1050,7 @@ def _build_pipeline(config: AppConfig) -> PipelineCoordinator:
             _add_meshcore_usb_source(coordinator, config)
 
     if (
-        "meshcore_usb" not in config.capture.sources
+        "meshcore_usb" not in capture_sources
         and config.capture.meshcore_usb.auto_detect
     ):
         _add_meshcore_usb_source(coordinator, config)

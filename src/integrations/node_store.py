@@ -249,6 +249,27 @@ class NodeStore:
 
         self.hidden_nodes_store.update(updater)
 
+    def _unhide_node_ids(self, node_ids: set[str]) -> None:
+        if not node_ids:
+            return
+
+        def updater(hidden_nodes: List[str]) -> List[str]:
+            current = {
+                self._normalize_node_id(node_id)
+                for node_id in (hidden_nodes or [])
+                if self._normalize_node_id(node_id)
+            }
+            current.difference_update(node_ids)
+            return sorted(current)
+
+        self.hidden_nodes_store.update(updater)
+
+    def is_node_hidden(self, node_id: Any) -> bool:
+        node_id_norm = self._normalize_node_id(node_id)
+        if not node_id_norm:
+            return False
+        return node_id_norm in self._read_hidden_nodes()
+
     def _extract_hop_values(
         self,
         raw: Optional[Dict[str, Any]],
@@ -405,12 +426,14 @@ class NodeStore:
         via: Optional[str] = None,
         last_heard: Optional[Any] = None,
         raw: Optional[Dict[str, Any]] = None,
+        reveal_hidden: bool = False,
     ) -> Dict[str, Any]:
         node_id_norm = self._normalize_node_id(node_id)
         if not node_id_norm:
             raise ValueError("node_id is required")
-        if node_id_norm in self._read_hidden_nodes():
-            return {"node_id": node_id_norm, "hidden": True}
+        if reveal_hidden:
+            self._unhide_node_ids({node_id_norm})
+        hidden = False if reveal_hidden else self.is_node_hidden(node_id_norm)
 
         def updater(nodes: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             nodes = self._dedupe_nodes_dict(nodes)
@@ -483,17 +506,18 @@ class NodeStore:
                 node["last_heard"] = now
 
             node["display_name"] = self._preferred_display_name(node)
+            node["hidden"] = hidden
             nodes[node_id_norm] = node
             return self._dedupe_nodes_dict(nodes)
 
         nodes = self.nodes_store.update(updater)
         return copy.deepcopy(nodes[node_id_norm])
 
-    def get_node(self, node_id: Any) -> Optional[Dict[str, Any]]:
+    def get_node(self, node_id: Any, *, include_hidden: bool = False) -> Optional[Dict[str, Any]]:
         node_id_norm = self._normalize_node_id(node_id)
         if not node_id_norm:
             return None
-        if node_id_norm in self._read_hidden_nodes():
+        if not include_hidden and self.is_node_hidden(node_id_norm):
             return None
         nodes = self._read_nodes_deduped()
         node = nodes.get(node_id_norm)
@@ -598,12 +622,12 @@ class NodeStore:
         to_name_norm = self._normalize_text(to_name)
 
         if not from_name_norm and from_id_norm:
-            node = self.get_node(from_id_norm)
+            node = self.get_node(from_id_norm, include_hidden=True)
             if node:
                 from_name_norm = self._preferred_display_name(node) or from_id_norm
 
         if not to_name_norm and to_id_norm:
-            node = self.get_node(to_id_norm)
+            node = self.get_node(to_id_norm, include_hidden=True)
             if node:
                 to_name_norm = self._preferred_display_name(node) or to_id_norm
 

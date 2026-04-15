@@ -4,6 +4,7 @@ APP_DIR=/opt/meshtak
 CONFIG_DIR=/etc/meshtak
 JSON_CONFIG=${CONFIG_DIR}/config.json
 YAML_CONFIG=${APP_DIR}/config/local.yaml
+PACKAGE_RECORD=${CONFIG_DIR}/installed_packages.txt
 SERVICE_FILE=/etc/systemd/system/meshtak.service
 ENV_FILE=/etc/default/meshtak
 RUN_USER=tdcadmin
@@ -13,6 +14,7 @@ CERT_DIR=${APP_DIR}/certs
 CERT_FILE=${CERT_DIR}/meshtak.crt
 KEY_FILE=${CERT_DIR}/meshtak.key
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HAL_BUILD_DIR=/opt/sx1302_hal
 WEB_PORT=9443
 ACTIVE_ENABLED=true
 ACTIVE_CONN_TYPE=serial
@@ -46,8 +48,68 @@ ask_questions(){
  echo; if [[ "$(prompt_yes_no 'Enable SPI/I2C on Raspberry Pi if raspi-config is present?' 'y')" == y ]]; then ENABLE_SPI_I2C=true; else ENABLE_SPI_I2C=false; fi
  if [[ "$(prompt_yes_no 'Open the Web UI port in UFW automatically?' 'y')" == y ]]; then OPEN_UFW=true; else OPEN_UFW=false; fi
 }
-install_packages(){ apt-get update -y; apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git rsync jq openssl ca-certificates unzip libsqlite3-dev libffi-dev pkg-config i2c-tools ufw; }
+install_packages(){
+  local packages=(
+    python3
+    python3-venv
+    python3-pip
+    python3-dev
+    build-essential
+    git
+    rsync
+    jq
+    openssl
+    ca-certificates
+    unzip
+    libsqlite3-dev
+    libffi-dev
+    pkg-config
+    i2c-tools
+    ufw
+  )
+  local newly_installed=()
+
+  mkdir -p "$CONFIG_DIR"
+  for pkg in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      newly_installed+=("$pkg")
+    fi
+  done
+
+  apt-get update -y
+  apt-get install -y "${packages[@]}"
+
+  if (( ${#newly_installed[@]} > 0 )); then
+    printf '%s\n' "${newly_installed[@]}" > "$PACKAGE_RECORD"
+  else
+    : > "$PACKAGE_RECORD"
+  fi
+}
 enable_pi_interfaces(){ [[ "$ENABLE_SPI_I2C" == true ]] || return 0; if command -v raspi-config >/dev/null 2>&1; then raspi-config nonint do_spi 0 || true; raspi-config nonint do_i2c 0 || true; fi; }
+install_passive_dependencies(){
+  [[ "$PASSIVE_ENABLED" == true ]] || return 0
+  if [[ -f /usr/local/lib/libloragw.so ]]; then
+    log "libloragw.so already installed"
+    return 0
+  fi
+
+  echo
+  echo "Passive WM1303 collector requested. Building patched SX1302 HAL for libloragw.so."
+  if HAL_BUILD_DIR="$HAL_BUILD_DIR" bash "$SCRIPT_DIR/scripts/install_libloragw.sh"; then
+    return 0
+  fi
+
+  echo
+  echo "WARNING: libloragw.so build failed. Passive WM1303 capture cannot start without it."
+  if [[ -t 0 ]] && [[ "$(prompt_yes_no 'Disable passive WM1303 collector for this install and continue?' 'y')" == y ]]; then
+      PASSIVE_ENABLED=false
+  elif [[ ! -t 0 ]]; then
+    echo "Non-interactive install: disabling passive WM1303 collector so the service can start."
+    PASSIVE_ENABLED=false
+  else
+    echo "Leaving passive WM1303 enabled. The app will start in degraded mode until libloragw is installed."
+  fi
+}
 ensure_groups(){ usermod -aG dialout "$RUN_USER" || true; usermod -aG spi "$RUN_USER" || true; usermod -aG i2c "$RUN_USER" || true; usermod -aG gpio "$RUN_USER" || true; }
 prepare_dirs(){ mkdir -p "$APP_DIR" "$CONFIG_DIR" "$CERT_DIR" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/config"; }
 copy_app(){ rsync -a --delete --exclude '.git' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'venv' --exclude '*.pyc' --exclude '*.pyo' "$SCRIPT_DIR/" "$APP_DIR/"; mkdir -p "$CERT_DIR" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/config"; }
@@ -168,5 +230,5 @@ EOF
 set_permissions(){ chown -R "$RUN_USER:$RUN_GROUP" "$APP_DIR" "$CONFIG_DIR"; }
 reload_and_start(){ systemctl daemon-reload; systemctl enable meshtak.service; systemctl restart meshtak.service; }
 open_firewall(){ [[ "$OPEN_UFW" == true ]] || return 0; command -v ufw >/dev/null 2>&1 && ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true; }
-main(){ require_root; ask_questions; install_packages; enable_pi_interfaces; ensure_groups; prepare_dirs; copy_app; create_venv; generate_web_cert; write_json_config; write_yaml_config; write_env_file; write_service; set_permissions; reload_and_start; open_firewall; echo; systemctl status meshtak; echo ; echo "https://$(hostname -I | awk '{print $1}'):${WEB_PORT}"; }
+main(){ require_root; ask_questions; install_packages; enable_pi_interfaces; install_passive_dependencies; ensure_groups; prepare_dirs; copy_app; create_venv; generate_web_cert; write_json_config; write_yaml_config; write_env_file; write_service; set_permissions; reload_and_start; open_firewall; echo; systemctl status meshtak; echo ; echo "https://$(hostname -I | awk '{print $1}'):${WEB_PORT}"; }
 main "$@"

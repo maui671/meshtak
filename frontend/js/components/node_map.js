@@ -138,7 +138,7 @@ class NodeMap {
     _addNodeMarker(n, lat, lon) {
         const protocol = n.protocol || n.via || 'meshtastic';
         const isMeshtastic = protocol === 'meshtastic' || protocol === 'heltec';
-        const color = isMeshtastic ? '#5cb6ff' : '#83c4ff';
+        const color = isMeshtastic ? '#bfe98b' : '#e8f5b5';
 
         const heard = n.last_heard || n.last_seen;
         const heardTs = typeof heard === 'number' ? heard * 1000 : new Date(heard).getTime();
@@ -148,7 +148,7 @@ class NodeMap {
             radius: 6,
             fillColor: color,
             fillOpacity: 0.8,
-            color: isRecent ? '#dff1ff' : color,
+            color: isRecent ? '#f4ffd2' : color,
             weight: isRecent ? 2 : 1,
             className: isRecent ? 'node-pulse' : '',
         });
@@ -180,10 +180,10 @@ class NodeMap {
         if (!packet.source_id || !this._initialized) return;
         const marker = this._markers[this._normalizeNodeId(packet.source_id)];
         if (marker) {
-            marker.setStyle({ color: '#dff1ff', weight: 2 });
+            marker.setStyle({ color: '#f4ffd2', weight: 2 });
             this._drawPacketLine(marker);
             setTimeout(() => {
-                const proto = (packet.protocol || 'meshtastic') === 'meshtastic' ? '#5cb6ff' : '#83c4ff';
+                const proto = (packet.protocol || 'meshtastic') === 'meshtastic' ? '#bfe98b' : '#e8f5b5';
                 marker.setStyle({ color: proto, weight: 1 });
             }, 5000);
         }
@@ -195,7 +195,7 @@ class NodeMap {
         const nodeLatLng = sourceMarker.getLatLng();
 
         const line = L.polyline([nodeLatLng, deviceLatLng], {
-            color: '#00e5a0',
+            color: '#bfe98b',
             weight: 2,
             opacity: 0.8,
             dashArray: '6, 4',

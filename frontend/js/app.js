@@ -31,6 +31,7 @@ let latestRadioNodes = [];
 let latestChannels = [];
 let latestDevice = null;
 let latestSettings = {};
+let latestRadioStatus = { connected: false, status: 'unknown' };
 let latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -41,6 +42,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         countId: 'packet-count',
         statusId: 'packet-feed-status',
         maxRows: PACKET_LIMIT,
+        nodeLabelResolver: _packetNodeLabel,
+        nodeMatcher: _packetNodeMatches,
     });
 
     packetFeedInstance = packetFeed;
@@ -51,6 +54,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     _bindDashboardWorkspace(nodeMap);
     _bindCommandShell(nodeMap);
     _bindSettingsControls();
+    _bindRadioConfigControls();
     _bindAuthControls();
     _bindUserAccountControls();
     _startCommandClock();
@@ -142,6 +146,7 @@ async function _refreshData(nodeMap, nodeList) {
         nodeMap.loadNodes(mergedNodes, latestDevice);
         nodeList.loadNodes(mergedNodes);
         _refreshNodeFilterOptions();
+        packetFeedInstance?.refreshLabels?.();
         _refreshCommandBanner();
     } catch (e) {
         console.error('Refresh failed:', e);
@@ -150,23 +155,29 @@ async function _refreshData(nodeMap, nodeList) {
 
 async function _updateStats() {
     try {
-        const [trafficRes, signalRes, nodeRes, deviceRes, metricsRes] = await Promise.all([
+        const [trafficRes, signalRes, nodeRes, deviceRes, metricsRes, settingsRes] = await Promise.all([
             fetch('/api/analytics/traffic'),
             fetch('/api/analytics/signal/summary'),
             fetch('/api/nodes/count'),
             fetch('/api/device/status'),
             fetch('/api/device/metrics'),
+            fetch('/api/settings'),
         ]);
 
         const traffic = await trafficRes.json();
         const signal = await signalRes.json();
         const nodeCount = await nodeRes.json();
         const device = await deviceRes.json();
+        if (settingsRes.ok) {
+            latestSettings = await settingsRes.json();
+        }
 
         _setText('stat-nodes-val', `${nodeCount.active} / ${nodeCount.count}`);
         _setText('stat-packets-val', traffic.total_packets);
         _setText('stat-rate-val', traffic.packets_per_minute);
         _setText('stat-rssi-val', signal.avg_rssi != null ? `${signal.avg_rssi} dBm` : '--');
+        _setText('stat-nodes-copy', `${nodeCount.active} active / ${nodeCount.count} total`);
+        _setText('stat-packets-copy', `${traffic.total_packets} captured`);
 
         const relay = device.relay || {};
         _setText('stat-relay-val', relay.relayed ?? 0);
@@ -174,12 +185,19 @@ async function _updateStats() {
         _setText('stat-relay-sub', evaluated > 0
             ? `${evaluated} evaluated`
             : relay.enabled ? 'listening...' : 'relay off');
+        _setText('stat-relay-copy', evaluated > 0
+            ? `${relay.relayed ?? 0} relayed / ${relay.rejected ?? 0} rejected`
+            : relay.enabled ? 'listening' : 'off');
 
-        _setText('stat-uptime-val', _formatUptime(device.uptime_seconds || 0));
+        const uptime = _formatUptime(device.uptime_seconds || 0);
+        _setText('stat-uptime-val', uptime);
+        _setText('stat-uptime-copy', uptime);
 
         _setText('node-count-badge', `${nodeCount.active} / ${nodeCount.count} nodes`);
         _setText('packet-count-badge', `${traffic.total_packets} packets`);
         _setText('version-badge', device.firmware_version ? `v${device.firmware_version}` : '--');
+        _setText('stat-collector-val', _moduleLabel(latestSettings.collector?.status, latestSettings.collector?.enabled));
+        _setText('stat-tak-val', latestSettings.tak?.enabled ? 'Enabled' : 'Disabled');
 
         if (metricsRes.ok) {
             const metrics = await metricsRes.json();
@@ -190,6 +208,7 @@ async function _updateStats() {
             _setText('stat-disk-sub', `${metrics.disk_used_gb} / ${metrics.disk_total_gb} GB`);
             _setText('stat-temp-val', metrics.cpu_temp_c != null ? `${metrics.cpu_temp_c}C` : 'N/A');
         }
+        _renderSystemMessages();
         _refreshCommandBanner();
     } catch (e) {
         console.error('Failed to update stats:', e);
@@ -203,15 +222,18 @@ async function _refreshRadioUi() {
         _refreshChannels(),
         _refreshMessages(),
     ]);
+    packetFeedInstance?.refreshLabels?.();
 }
 
 async function _refreshRadioStatus() {
     try {
         const res = await fetch('/api/radio/status');
         const data = await res.json();
+        latestRadioStatus = data || { connected: false, status: 'unknown' };
         const status = data.status || (data.connected ? 'connected' : 'disconnected');
 
         _setText('msg-status', status);
+        _setText('stat-radio-val', data.connected ? 'Connected' : 'Offline');
 
         const settingsStatus = document.getElementById('radio-settings-status');
         if (settingsStatus) {
@@ -228,9 +250,13 @@ async function _refreshRadioStatus() {
         if (msgBox) msgBox.disabled = !enabled;
         if (target) target.disabled = !enabled;
         if (channel) channel.disabled = !enabled || _isDirectMessageSelected();
+        _refreshCommandBanner();
     } catch (e) {
         console.error('Radio status refresh failed:', e);
+        latestRadioStatus = { connected: false, status: 'disconnected' };
         _setText('msg-status', 'disconnected');
+        _setText('stat-radio-val', 'Offline');
+        _refreshCommandBanner();
     }
 }
 
@@ -806,9 +832,12 @@ function _renderMessages({ preserveScroll = false, resetScroll = false } = {}) {
         const row = document.createElement('article');
         row.className = `message-item message-item--${msg.direction || 'rx'}`;
 
+        const endpoint = msg.direction === 'tx'
+            ? _messageEndpointLabel(msg.to_name, msg.to_id, 'Broadcast')
+            : _messageEndpointLabel(msg.from_name, msg.from_id, 'Unknown');
         const who = msg.direction === 'tx'
-            ? `TX to ${msg.to_name || msg.to_id || 'Broadcast'}`
-            : `RX from ${msg.from_name || msg.from_id || 'Unknown'}`;
+            ? `TX to ${endpoint}`
+            : `RX from ${endpoint}`;
 
         const timestamp = msg.timestamp
             ? new Date(msg.timestamp * 1000).toLocaleTimeString()
@@ -1115,6 +1144,95 @@ function _nodeTargetLabel(node) {
     return `${_nodeShortLabel(node)} (${_normalizeNodeId(node.node_id)})`;
 }
 
+function _messageEndpointLabel(name, nodeId, fallback) {
+    const normalizedId = _normalizeNodeId(nodeId);
+    if (!normalizedId) {
+        return name || fallback;
+    }
+
+    const matchedNode = _mergeNodeCollections(latestNodes, latestRadioNodes)
+        .find((node) => _normalizeNodeId(node.node_id) === normalizedId);
+    const preferredName = String(
+        matchedNode?.short_name ||
+        matchedNode?.display_name ||
+        matchedNode?.long_name ||
+        name ||
+        ''
+    ).trim();
+
+    if (preferredName && _normalizeNodeId(preferredName) !== normalizedId) {
+        return `${preferredName} (${normalizedId})`;
+    }
+    return normalizedId;
+}
+
+function _packetNodeLabel(nodeId) {
+    const normalizedId = _normalizeNodeId(nodeId);
+    if (!normalizedId) {
+        return '';
+    }
+    if (['!ffffffff', '!ffff'].includes(normalizedId)) {
+        return 'BCAST';
+    }
+
+    const matchedNode = _findNodeForPacketId(nodeId);
+    const preferredName = String(
+        matchedNode?.short_name ||
+        matchedNode?.display_name ||
+        matchedNode?.long_name ||
+        ''
+    ).trim();
+    if (preferredName && _normalizeNodeId(preferredName) !== normalizedId) {
+        return `${preferredName} (${normalizedId})`;
+    }
+    return _shortPacketNodeId(normalizedId);
+}
+
+function _packetNodeMatches(packetNodeId, filterNodeId) {
+    const packetId = _normalizeNodeId(packetNodeId);
+    const filterId = _normalizeNodeId(filterNodeId);
+    if (!packetId || !filterId) {
+        return false;
+    }
+    if (packetId === filterId) {
+        return true;
+    }
+    const matchedNode = _findNodeForPacketId(packetNodeId);
+    return !!matchedNode && _normalizeNodeId(matchedNode.node_id) === filterId;
+}
+
+function _findNodeForPacketId(nodeId) {
+    const normalizedId = _normalizeNodeId(nodeId);
+    if (!normalizedId) {
+        return null;
+    }
+    const normalizedSuffix = normalizedId.replace(/^!/, '');
+    const nodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
+    return nodes.find((node) => {
+        const candidateId = _normalizeNodeId(node.node_id);
+        const candidateSuffix = candidateId.replace(/^!/, '');
+        const hasUsableSuffix = candidateSuffix.length >= 4 && normalizedSuffix.length >= 4;
+        return candidateId === normalizedId ||
+            candidateSuffix === normalizedSuffix ||
+            (hasUsableSuffix && (
+                candidateSuffix.endsWith(normalizedSuffix) ||
+                normalizedSuffix.endsWith(candidateSuffix)
+            ));
+    }) || null;
+}
+
+function _shortPacketNodeId(nodeId) {
+    const normalizedId = _normalizeNodeId(nodeId);
+    if (!normalizedId) {
+        return '--';
+    }
+    const raw = normalizedId.replace(/^!/, '');
+    if (['ffffffff', 'ffff'].includes(raw)) {
+        return 'BCAST';
+    }
+    return raw.length > 6 ? `!${raw.slice(-4)}` : normalizedId;
+}
+
 function _normalizeNodeId(value) {
     const text = String(value || '').trim();
     if (!text) {
@@ -1279,6 +1397,11 @@ function _bindAuthControls() {
     }
 }
 
+function _setAuthShellState(authenticated) {
+    document.body.classList.toggle('auth-authenticated', authenticated);
+    document.body.classList.toggle('auth-unauthenticated', !authenticated);
+}
+
 function _bindUserAccountControls() {
     const createBtn = document.getElementById('account-create');
     const refreshBtn = document.getElementById('account-refresh');
@@ -1329,11 +1452,18 @@ async function _login() {
             throw new Error(data.detail || 'Login failed');
         }
         latestAuth = data;
+        _setText('auth-status', 'Access granted. Launching command board...');
+        document.body.classList.add('auth-launching');
         _setValue('auth-password', '');
         _renderAuthState();
-        await _loadUserAccounts();
-        _checkForUpdate();
+        setTimeout(async () => {
+            document.body.classList.remove('auth-launching');
+            _renderAuthState();
+            await _loadUserAccounts();
+            _checkForUpdate();
+        }, 1050);
     } catch (error) {
+        document.body.classList.remove('auth-launching');
         _setText('auth-status', error.message || 'Login failed');
     }
 }
@@ -1343,6 +1473,7 @@ async function _logout() {
         await fetch('/api/auth/logout', { method: 'POST' });
     } catch (_) {}
     latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
+    document.body.classList.remove('auth-launching');
     _renderAuthState();
     _renderUserAccounts([]);
     _checkForUpdate();
@@ -1352,8 +1483,13 @@ function _renderAuthState() {
     const form = document.getElementById('auth-form');
     const logout = document.getElementById('auth-logout');
     const status = document.getElementById('auth-status');
+    const sessionStatus = document.getElementById('auth-session-status');
+    const radioConfigNav = document.getElementById('radio-config-nav');
+    const radioConfigPanel = document.getElementById('radio-config-panel');
     const authenticated = !!latestAuth.authenticated;
+    const isAdmin = authenticated && latestAuth.role === 'admin';
 
+    _setAuthShellState(authenticated);
     if (form) {
         form.classList.toggle('hidden', authenticated);
     }
@@ -1361,9 +1497,26 @@ function _renderAuthState() {
         logout.classList.toggle('hidden', !authenticated);
     }
     if (status) {
-        status.textContent = authenticated
+        status.textContent = authenticated && document.body.classList.contains('auth-launching')
+            ? 'Access granted. Launching command board...'
+            : authenticated
             ? `${latestAuth.username || 'user'} / ${latestAuth.role || 'user'}`
             : 'Not signed in';
+    }
+    if (sessionStatus) {
+        sessionStatus.textContent = authenticated
+            ? `${latestAuth.username || 'user'} / ${latestAuth.role || 'user'}`
+            : 'Not signed in';
+    }
+    if (radioConfigNav) {
+        radioConfigNav.classList.toggle('hidden', !isAdmin);
+    }
+    if (radioConfigPanel) {
+        radioConfigPanel.classList.toggle('hidden', !isAdmin);
+        radioConfigPanel.classList.toggle('active', false);
+    }
+    if (!isAdmin && window.location.hash === '#radio-config') {
+        history.replaceState(null, '', '#dashboard');
     }
 }
 
@@ -1499,18 +1652,22 @@ async function _deleteUserAccount(username) {
 
 function _bindCommandShell(nodeMap) {
     const links = Array.from(document.querySelectorAll('[data-view-link]'));
+    const isAdminViewAllowed = (viewName) => viewName !== 'radio-config' || (latestAuth.authenticated && latestAuth.role === 'admin');
     const viewFromHash = () => {
         const hashView = (window.location.hash || '#dashboard').replace('#', '') || 'dashboard';
         return hashView === 'overview' ? 'dashboard' : hashView;
     };
     const showView = (viewName) => {
-        const normalized = ['dashboard', 'map', 'nodes', 'messages', 'packets'].includes(viewName)
+        const requested = ['dashboard', 'map', 'nodes', 'messages', 'radio-config', 'packets', 'stats'].includes(viewName)
             ? viewName
             : 'dashboard';
+        const normalized = isAdminViewAllowed(requested) ? requested : 'dashboard';
         const dashboardMode = normalized === 'dashboard';
 
         document.querySelectorAll('[data-view]').forEach((view) => {
-            view.classList.toggle('active', dashboardMode || view.dataset.view === normalized);
+            const isTarget = dashboardMode || view.dataset.view === normalized;
+            const isBlocked = view.dataset.view === 'radio-config' && !isAdminViewAllowed('radio-config');
+            view.classList.toggle('active', isTarget && !isBlocked);
         });
 
         links.forEach((link) => {
@@ -1531,8 +1688,9 @@ function _bindCommandShell(nodeMap) {
         item.addEventListener('click', (event) => {
             event.preventDefault();
             const viewName = item.dataset.viewLink || 'dashboard';
-            history.pushState(null, '', `#${viewName}`);
-            showView(viewName);
+            const targetView = isAdminViewAllowed(viewName) ? viewName : 'dashboard';
+            history.pushState(null, '', `#${targetView}`);
+            showView(targetView);
         });
     });
 
@@ -1559,33 +1717,277 @@ function _refreshCommandBanner() {
 
     const nodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
     const packetCount = packetFeedInstance?.getTotalCount?.() || _totalPackets || 0;
-    const heltecCount = nodes.filter((node) => {
-        const via = String(node.via || node.protocol || '').toLowerCase();
-        return via.includes('heltec') || via.includes('meshtastic') || node.meshtastic_seen;
-    }).length;
-    let posture = 'Standby';
-    let detail = 'Waiting for node, packet, and radio telemetry.';
+    const radioConnected = !!latestRadioStatus.connected || latestRadioStatus.status === 'connected';
+    let posture = 'Online';
 
     banner.classList.remove('status-banner--degraded', 'status-banner--offline');
 
-    if (!nodes.length && !packetCount) {
+    if (!radioConnected && !nodes.length && !packetCount) {
         posture = 'Offline';
-        detail = 'No node or packet activity is currently reaching the dashboard.';
         banner.classList.add('status-banner--offline');
-    } else if (!heltecCount) {
-        posture = 'Collector Only';
-        detail = `${nodes.length} nodes visible from passive collection. Heltec node metadata has not arrived yet.`;
+    } else if (!radioConnected) {
+        posture = 'Degraded';
         banner.classList.add('status-banner--degraded');
-    } else if (packetCount < 10) {
-        posture = 'Monitoring';
-        detail = `${nodes.length} nodes visible with ${packetCount} recent packets.`;
-    } else {
-        posture = 'Operational';
-        detail = `${nodes.length} nodes visible across Heltec and collector sources with ${packetCount} packets in watch.`;
     }
 
     _setText('network-posture', posture);
-    _setText('network-detail', detail);
+}
+
+function _moduleLabel(status, enabled = true) {
+    if (enabled === false) {
+        return 'Disabled';
+    }
+    const text = String(status || '').trim().toLowerCase();
+    if (!text || text === 'unknown') {
+        return 'Unknown';
+    }
+    if (['running', 'connected', 'online'].includes(text)) {
+        return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+    if (['stopped', 'disconnected', 'offline', 'error'].includes(text)) {
+        return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+    return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function _renderSystemMessages() {
+    const el = document.getElementById('system-message-list');
+    if (!el) {
+        return;
+    }
+    const messages = [];
+    if (!latestRadioStatus.connected) {
+        messages.push('Radio offline.');
+    }
+    if (latestSettings.collector?.enabled === false || ['stopped', 'error'].includes(String(latestSettings.collector?.status || '').toLowerCase())) {
+        messages.push(`Collector ${_moduleLabel(latestSettings.collector?.status, latestSettings.collector?.enabled).toLowerCase()}.`);
+    }
+    if (!latestSettings.tak?.enabled) {
+        messages.push('TAK disabled.');
+    }
+    el.innerHTML = messages.length
+        ? messages.map((message) => `<div>${_escapeHtml(message)}</div>`).join('')
+        : 'No system messages.';
+}
+
+function _bindRadioConfigControls() {
+    const refresh = document.getElementById('radio-config-refresh');
+    if (refresh) {
+        refresh.addEventListener('click', _loadRadioConfig);
+    }
+
+    const reconnect = document.getElementById('radio-config-reconnect');
+    if (reconnect) {
+        reconnect.addEventListener('click', async () => {
+            await _postJson('/api/control/radio/reconnect', {}, 'radio-config-status', 'Radio reconnect requested');
+            await _refreshRadioUi();
+            await _loadRadioConfig();
+        });
+    }
+
+    const save = document.getElementById('radio-config-save-floating');
+    if (save) {
+        save.addEventListener('click', _applyRadioConfig);
+    }
+
+    const generate = document.getElementById('private-channel-generate');
+    if (generate) {
+        generate.addEventListener('click', () => {
+            _setValue('private-channel-psk', _generatePskBase64());
+            _setText('radio-config-status', 'Generated channel PSK');
+        });
+    }
+
+    const cliDryRun = document.getElementById('radio-cli-dry-run');
+    if (cliDryRun) {
+        cliDryRun.addEventListener('click', () => _runRadioCli(true));
+    }
+
+    const cliRun = document.getElementById('radio-cli-run');
+    if (cliRun) {
+        cliRun.addEventListener('click', () => _runRadioCli(false));
+    }
+
+    const create = document.getElementById('private-channel-create');
+    if (create) {
+        create.addEventListener('click', _createPrivateChannel);
+    }
+
+    const importButton = document.getElementById('private-channel-import');
+    if (importButton) {
+        importButton.addEventListener('click', _importPrivateChannel);
+    }
+
+    _loadRadioConfig();
+}
+
+async function _loadRadioConfig() {
+    try {
+        const response = await fetch('/api/radio/config');
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || 'Unable to load radio config');
+        }
+
+        const connection = data.connection || {};
+        _setText('radio-config-status', data.connected ? 'Radio connected' : 'Radio offline');
+        _setText('radio-config-connection', _formatRadioConnection(connection));
+        _renderStoredChannels(data.stored_channel_keys || {}, data.channels || []);
+
+        const myInfo = data.radio?.myInfo || {};
+        const user = myInfo.my_node_info?.user || myInfo.user || {};
+        if (user.longName && !document.getElementById('radio-config-long-name')?.value) {
+            _setValue('radio-config-long-name', user.longName);
+        }
+        if (user.shortName && !document.getElementById('radio-config-short-name')?.value) {
+            _setValue('radio-config-short-name', user.shortName);
+        }
+    } catch (error) {
+        _setText('radio-config-status', error.message || 'Unable to load radio config');
+    }
+}
+
+function _formatRadioConnection(connection) {
+    const type = String(connection?.type || 'serial').toLowerCase();
+    if (['tcp', 'ip', 'wifi'].includes(type)) {
+        return connection?.host ? `IP ${connection.host}` : 'IP radio';
+    }
+    return connection?.serial_port || connection?.port || '/dev/ttyACM0';
+}
+
+function _radioApplyPayload() {
+    return {
+        long_name: document.getElementById('radio-config-long-name')?.value.trim(),
+        short_name: document.getElementById('radio-config-short-name')?.value.trim(),
+        region: document.getElementById('radio-config-region')?.value,
+        modem_preset: document.getElementById('radio-config-modem')?.value,
+        tx_power: document.getElementById('radio-config-tx-power')?.value,
+        position_broadcast_secs: document.getElementById('radio-config-position')?.value,
+    };
+}
+
+async function _applyRadioConfig() {
+    const result = await _postJson('/api/radio/config/apply', _radioApplyPayload(), 'radio-config-status', 'Radio config saved');
+    if (result) {
+        _setRadioOutput(JSON.stringify(result, null, 2));
+        await _refreshRadioUi();
+        await _loadRadioConfig();
+    }
+}
+
+async function _runRadioCli(dryRun) {
+    const result = await _postJson('/api/radio/config/cli', {
+        args: document.getElementById('radio-cli-args')?.value.trim(),
+        dry_run: !!dryRun,
+    }, 'radio-config-status', dryRun ? 'CLI preview ready' : 'CLI command complete');
+    if (result) {
+        _setRadioOutput(JSON.stringify(result, null, 2));
+        if (!dryRun) {
+            await _refreshRadioUi();
+            await _loadRadioConfig();
+        }
+    }
+}
+
+function _generatePskBase64() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    let binary = '';
+    bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+}
+
+async function _createPrivateChannel() {
+    const payload = {
+        name: document.getElementById('private-channel-name')?.value.trim(),
+        index: document.getElementById('private-channel-index')?.value,
+        psk: document.getElementById('private-channel-psk')?.value.trim(),
+        apply_to_radio: !!document.getElementById('private-channel-apply-radio')?.checked,
+    };
+    if (!payload.psk) {
+        payload.psk = _generatePskBase64();
+        _setValue('private-channel-psk', payload.psk);
+    }
+    const result = await _postJson('/api/radio/channels/create-private', payload, 'radio-config-status', 'Private channel saved');
+    if (result) {
+        _showChannelExport(result);
+        await _refreshChannels();
+        await _loadRadioConfig();
+    }
+}
+
+async function _importPrivateChannel() {
+    const payload = {
+        import_text: document.getElementById('private-channel-import-text')?.value.trim(),
+        name: document.getElementById('private-channel-import-name')?.value.trim(),
+        index: document.getElementById('private-channel-import-index')?.value,
+        psk: document.getElementById('private-channel-import-psk')?.value.trim(),
+        apply_to_radio: !!document.getElementById('private-channel-import-apply-radio')?.checked,
+    };
+    const result = await _postJson('/api/radio/channels/import', payload, 'radio-config-status', 'Private channel imported');
+    if (result) {
+        _showChannelExport(result);
+        await _refreshChannels();
+        await _loadRadioConfig();
+    }
+}
+
+function _renderStoredChannels(storedKeys, bridgeChannels) {
+    const list = document.getElementById('radio-channel-list');
+    if (!list) {
+        return;
+    }
+    const bridgeByName = new Map((bridgeChannels || []).map((channel) => [String(channel.name || ''), channel]));
+    const rows = Object.values(storedKeys || {});
+    if (!rows.length) {
+        list.textContent = 'No private channels stored.';
+        return;
+    }
+    list.innerHTML = rows.map((row) => {
+        const channel = bridgeByName.get(String(row.name || '')) || {};
+        const index = channel.index ?? 1;
+        const exportData = encodeURIComponent(JSON.stringify({ name: row.name, index, psk: row.psk }));
+        return `
+            <div class="radio-channel-item">
+                <div>
+                    <strong>${_escapeHtml(row.name || 'Unnamed')}</strong>
+                    <span>Index ${_escapeHtml(index)} | ${_escapeHtml(row.masked || 'stored')}</span>
+                </div>
+                <button class="action-btn" type="button" data-radio-export="${exportData}">Export</button>
+            </div>
+        `;
+    }).join('');
+    list.querySelectorAll('[data-radio-export]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const data = JSON.parse(decodeURIComponent(button.dataset.radioExport || '{}'));
+            _showChannelExport({ export: _buildClientChannelExport(data.name, Number(data.index || 1), data.psk) });
+        });
+    });
+}
+
+function _showChannelExport(result) {
+    const exportData = result?.export || {};
+    const command = result?.command ? `\n\nRadio CLI output:\n${JSON.stringify(result.command, null, 2)}` : '';
+    _setRadioOutput(`MeshTAK import URL:\n${exportData.meshtak_url || ''}\n\nOther-device CLI:\n${exportData.meshtastic_cli || ''}\n\nJSON:\n${JSON.stringify(exportData.json || {}, null, 2)}${command}`);
+}
+
+function _buildClientChannelExport(name, index, psk) {
+    const payload = { name, index, psk, format: 'meshtak-channel-v1' };
+    const encoded = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    return {
+        meshtak_url: `meshtak://channel/${encoded}`,
+        meshtastic_cli: `meshtastic --ch-index ${index} --ch-set name "${name}" --ch-set psk "${psk}"`,
+        json: payload,
+    };
+}
+
+function _setRadioOutput(value) {
+    const output = document.getElementById('radio-config-output');
+    if (output) {
+        output.value = value || '';
+    }
 }
 
 function _bindSettingsControls() {

@@ -12,7 +12,25 @@
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/dashboard.css" />
 </head>
-<body>
+<body class="auth-unauthenticated">
+    <section id="login-screen" class="login-screen" aria-label="MeshTAK login">
+        <div class="login-stage" aria-hidden="true">
+            <img src="/logo.png" alt="" class="login-spear">
+            <div class="login-plume"></div>
+        </div>
+        <div class="login-panel">
+            <div class="login-kicker">MeshTAK Command Access</div>
+            <h1>Launch Control</h1>
+            <p>Authenticate to bring the mesh operations board online.</p>
+            <div class="auth-status" id="auth-status">Not signed in</div>
+            <div class="auth-form" id="auth-form">
+                <input id="auth-username" class="auth-input" type="text" placeholder="Username" autocomplete="username">
+                <input id="auth-password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password">
+                <button id="auth-login" class="auth-btn" type="button">Log In</button>
+            </div>
+        </div>
+    </section>
+
     <nav id="sidebar">
         <div class="sb-nav">
             <a href="#dashboard" class="sb-item active" data-view-link="dashboard">
@@ -31,9 +49,17 @@
                 <span class="sb-icon">M</span>
                 Messaging
             </a>
+            <a href="#radio-config" id="radio-config-nav" class="sb-item hidden" data-view-link="radio-config">
+                <span class="sb-icon">R</span>
+                Radio Config
+            </a>
             <a href="#packets" class="sb-item" data-view-link="packets">
                 <span class="sb-icon">P</span>
                 Packets
+            </a>
+            <a href="#stats" class="sb-item" data-view-link="stats">
+                <span class="sb-icon">S</span>
+                System Stats
             </a>
 
             <div class="sb-label">System</div>
@@ -45,12 +71,7 @@
 
         <div class="sb-footer">
             <div class="auth-box">
-                <div class="auth-status" id="auth-status">Not signed in</div>
-                <div class="auth-form" id="auth-form">
-                    <input id="auth-username" class="auth-input" type="text" placeholder="Username" autocomplete="username">
-                    <input id="auth-password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password">
-                    <button id="auth-login" class="auth-btn" type="button">Log In</button>
-                </div>
+                <div class="auth-status" id="auth-session-status">Not signed in</div>
                 <button id="auth-logout" class="auth-btn hidden" type="button">Log Out</button>
             </div>
             <div class="sb-version" id="version-badge">--</div>
@@ -62,8 +83,9 @@
         <header id="hdr">
             <div class="hdr-left">
                 <h1 class="hdr-brand">
-                    <img src="/logo.svg" alt="" class="hdr-spear" aria-hidden="true">
-                    <span>MeshTAK</span>
+                    <div class="hdr-plume"></div>
+                    <img src="/logo.png" alt="" class="hdr-spear" aria-hidden="true">
+                    <span class="hdr-wordmark">MeshTAK</span>
                 </h1>
                 <span class="hdr-node" id="device-name">Command Mesh</span>
             </div>
@@ -83,7 +105,6 @@
                 <div class="status-banner__label">Network Status</div>
                 <div class="status-banner__value" id="network-posture">Standby</div>
             </div>
-            <div class="status-banner__detail" id="network-detail">Waiting for node, packet, and radio telemetry.</div>
         </section>
 
         <section id="kpi-row" class="kpi-row app-view app-view--dashboard active" data-view="dashboard">
@@ -96,35 +117,21 @@
                 <div class="kpi-label">Packets Captured</div>
             </article>
             <article class="kpi">
-                <div class="kpi-val" id="stat-rate-val">--</div>
-                <div class="kpi-label">Packets Per Minute</div>
-            </article>
-            <article class="kpi">
-                <div class="kpi-val" id="stat-rssi-val">--</div>
-                <div class="kpi-label">Average RSSI</div>
-            </article>
-            <article class="kpi">
                 <div class="kpi-val" id="stat-relay-val">--</div>
                 <div class="kpi-label">Packets Relayed</div>
                 <div class="kpi-sub" id="stat-relay-sub"></div>
             </article>
             <article class="kpi">
-                <div class="kpi-val" id="stat-cpu-val">--</div>
-                <div class="kpi-label">CPU</div>
+                <div class="kpi-val" id="stat-collector-val">--</div>
+                <div class="kpi-label">Collector Status</div>
             </article>
             <article class="kpi">
-                <div class="kpi-val" id="stat-ram-val">--</div>
-                <div class="kpi-label">RAM</div>
-                <div class="kpi-sub" id="stat-ram-sub"></div>
+                <div class="kpi-val" id="stat-radio-val">--</div>
+                <div class="kpi-label">Radio Status</div>
             </article>
             <article class="kpi">
-                <div class="kpi-val" id="stat-disk-val">--</div>
-                <div class="kpi-label">Disk</div>
-                <div class="kpi-sub" id="stat-disk-sub"></div>
-            </article>
-            <article class="kpi">
-                <div class="kpi-val" id="stat-temp-val">--</div>
-                <div class="kpi-label">CPU Temp</div>
+                <div class="kpi-val" id="stat-tak-val">--</div>
+                <div class="kpi-label">TAK Ingestion</div>
             </article>
         </section>
 
@@ -280,6 +287,227 @@
                         </thead>
                         <tbody id="packet-tbody"></tbody>
                     </table>
+                </div>
+            </section>
+
+            <section id="stats-panel" class="section app-view app-view--stats" data-view="stats">
+                <div class="sec-head">
+                    <div>
+                        <h2>System Stats</h2>
+                        <p>Host health and mesh performance, separated from the command dashboard.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span class="badge badge--muted" id="stats-status">Live</span>
+                    </div>
+                </div>
+                <div class="stats-grid">
+                    <article class="stat-card">
+                        <h3>System</h3>
+                        <dl class="stat-list">
+                            <div><dt>CPU</dt><dd id="stat-cpu-val">--</dd></div>
+                            <div><dt>CPU Temp</dt><dd id="stat-temp-val">--</dd></div>
+                            <div><dt>RAM</dt><dd><span id="stat-ram-val">--</span><small id="stat-ram-sub"></small></dd></div>
+                            <div><dt>Disk</dt><dd><span id="stat-disk-val">--</span><small id="stat-disk-sub"></small></dd></div>
+                            <div><dt>Uptime</dt><dd id="stat-uptime-copy">--</dd></div>
+                        </dl>
+                    </article>
+                    <article class="stat-card">
+                        <h3>Mesh</h3>
+                        <dl class="stat-list">
+                            <div><dt>Nodes</dt><dd id="stat-nodes-copy">--</dd></div>
+                            <div><dt>Packets</dt><dd id="stat-packets-copy">--</dd></div>
+                            <div><dt>Packets/min</dt><dd id="stat-rate-val">--</dd></div>
+                            <div><dt>Average RSSI</dt><dd id="stat-rssi-val">--</dd></div>
+                            <div><dt>Relay Eval</dt><dd id="stat-relay-copy">--</dd></div>
+                        </dl>
+                    </article>
+                    <article class="stat-card">
+                        <h3>System Messages</h3>
+                        <div id="system-message-list" class="system-message-list">No system messages.</div>
+                    </article>
+                </div>
+            </section>
+
+            <section id="radio-config-panel" class="section app-view app-view--radio-config hidden" data-view="radio-config">
+                <div class="sec-head">
+                    <div>
+                        <h2>Radio Config</h2>
+                        <p>Configure the active Meshtastic radio, build private channels, and store decode keys for passive collection.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span id="radio-config-status" class="badge badge--muted">Not loaded</span>
+                        <span id="radio-config-connection" class="badge">--</span>
+                    </div>
+                </div>
+
+                <div class="radio-config-layout">
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Connected Radio</h3>
+                                <p>Common safe fields are applied through the Meshtastic CLI on the connected Heltec.</p>
+                            </div>
+                            <div class="radio-card__actions">
+                                <button id="radio-config-refresh" class="action-btn" type="button">Refresh</button>
+                                <button id="radio-config-reconnect" class="action-btn" type="button">Reconnect</button>
+                            </div>
+                        </div>
+                        <div class="radio-field-grid">
+                            <div class="radio-field radio-field--wide">
+                                <label for="radio-config-long-name">Long Name</label>
+                                <input id="radio-config-long-name" type="text" placeholder="MeshTAK Command">
+                            </div>
+                            <div class="radio-field">
+                                <label for="radio-config-short-name">Short Name</label>
+                                <input id="radio-config-short-name" type="text" maxlength="4" placeholder="MTAK">
+                            </div>
+                            <div class="radio-field">
+                                <label for="radio-config-region">Region</label>
+                                <select id="radio-config-region">
+                                    <option value="">Leave unchanged</option>
+                                    <option value="US">US</option>
+                                    <option value="EU_868">EU 868</option>
+                                    <option value="EU_433">EU 433</option>
+                                    <option value="ANZ">ANZ</option>
+                                    <option value="CN">CN</option>
+                                    <option value="JP">JP</option>
+                                    <option value="KR">KR</option>
+                                    <option value="TW">TW</option>
+                                    <option value="RU">RU</option>
+                                    <option value="IN">IN</option>
+                                    <option value="NZ_865">NZ 865</option>
+                                    <option value="TH">TH</option>
+                                    <option value="UA_433">UA 433</option>
+                                    <option value="UA_868">UA 868</option>
+                                </select>
+                            </div>
+                            <div class="radio-field">
+                                <label for="radio-config-modem">Modem Preset</label>
+                                <select id="radio-config-modem">
+                                    <option value="">Leave unchanged</option>
+                                    <option value="LONG_FAST">Long Fast</option>
+                                    <option value="LONG_SLOW">Long Slow</option>
+                                    <option value="VERY_LONG_SLOW">Very Long Slow</option>
+                                    <option value="MEDIUM_SLOW">Medium Slow</option>
+                                    <option value="MEDIUM_FAST">Medium Fast</option>
+                                    <option value="SHORT_SLOW">Short Slow</option>
+                                    <option value="SHORT_FAST">Short Fast</option>
+                                </select>
+                            </div>
+                            <div class="radio-field">
+                                <label for="radio-config-tx-power">TX Power</label>
+                                <input id="radio-config-tx-power" type="number" min="0" max="30" placeholder="Leave unchanged">
+                            </div>
+                            <div class="radio-field">
+                                <label for="radio-config-position">Position Interval (sec)</label>
+                                <input id="radio-config-position" type="number" min="0" placeholder="Leave unchanged">
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Advanced Meshtastic CLI</h3>
+                                <p>Run any Meshtastic radio argument set through the active connection. Enter arguments only, not the word meshtastic.</p>
+                            </div>
+                            <div class="radio-card__actions">
+                                <button id="radio-cli-dry-run" class="action-btn" type="button">Preview</button>
+                                <button id="radio-cli-run" class="settings-btn settings-btn--primary" type="button">Run Args</button>
+                            </div>
+                        </div>
+                        <div class="radio-field">
+                            <label for="radio-cli-args">CLI Arguments</label>
+                            <textarea id="radio-cli-args" placeholder='Example: --set lora.region US --set lora.modem_preset LONG_FAST'></textarea>
+                        </div>
+                    </article>
+
+                    <article class="radio-card">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Private Channel Builder</h3>
+                                <p>Create a key, save it for passive decode, and optionally push it to the radio.</p>
+                            </div>
+                        </div>
+                        <div class="radio-field-grid">
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-name">Channel Name</label>
+                                <input id="private-channel-name" type="text" maxlength="32" placeholder="Team Blue">
+                            </div>
+                            <div class="radio-field">
+                                <label for="private-channel-index">Channel Index</label>
+                                <input id="private-channel-index" type="number" min="1" max="7" value="1">
+                            </div>
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-psk">PSK (base64)</label>
+                                <div class="radio-inline-control">
+                                    <input id="private-channel-psk" type="text" placeholder="Generate or paste a key">
+                                    <button id="private-channel-generate" class="action-btn" type="button">Generate</button>
+                                </div>
+                            </div>
+                        </div>
+                        <label class="toolbar-check radio-check">
+                            <input id="private-channel-apply-radio" type="checkbox">
+                            <span>Apply this channel to the connected radio now</span>
+                        </label>
+                        <button id="private-channel-create" class="settings-btn settings-btn--primary" type="button">Create / Save Channel</button>
+                    </article>
+
+                    <article class="radio-card">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Import Private Channel</h3>
+                                <p>Paste a MeshTAK channel URL or JSON export. Meshtastic URLs can be stored after entering the name and PSK.</p>
+                            </div>
+                        </div>
+                        <div class="radio-field-grid">
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-import-text">Import Text</label>
+                                <textarea id="private-channel-import-text" placeholder="meshtak://channel/... or JSON"></textarea>
+                            </div>
+                            <div class="radio-field">
+                                <label for="private-channel-import-name">Name Override</label>
+                                <input id="private-channel-import-name" type="text" maxlength="32" placeholder="Optional">
+                            </div>
+                            <div class="radio-field">
+                                <label for="private-channel-import-index">Index</label>
+                                <input id="private-channel-import-index" type="number" min="1" max="7" value="1">
+                            </div>
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-import-psk">PSK Override</label>
+                                <input id="private-channel-import-psk" type="text" placeholder="Optional if export includes PSK">
+                            </div>
+                        </div>
+                        <label class="toolbar-check radio-check">
+                            <input id="private-channel-import-apply-radio" type="checkbox">
+                            <span>Apply imported channel to the connected radio now</span>
+                        </label>
+                        <button id="private-channel-import" class="settings-btn settings-btn--primary" type="button">Import / Save Channel</button>
+                    </article>
+
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Stored Decode Keys</h3>
+                                <p>These keys are written into the MeshTAK runtime config so passive packets can be decrypted.</p>
+                            </div>
+                        </div>
+                        <div id="radio-channel-list" class="radio-channel-list">No private channels stored.</div>
+                    </article>
+
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Export / CLI Output</h3>
+                                <p>Use the MeshTAK URL for this Web UI, or the CLI command on another Meshtastic device.</p>
+                            </div>
+                        </div>
+                        <textarea id="radio-config-output" class="radio-output" readonly placeholder="Channel exports and radio command output will appear here."></textarea>
+                    </article>
+                </div>
+
+                <div class="radio-save-rail">
+                    <button id="radio-config-save-floating" class="settings-btn settings-btn--primary" type="button">Save Radio Config</button>
                 </div>
             </section>
         </section>

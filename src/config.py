@@ -138,6 +138,8 @@ def _merge_dataclass(instance, overrides: dict):
         current = getattr(instance, key)
         if dataclasses.is_dataclass(current) and isinstance(value, dict):
             _merge_dataclass(current, value)
+        elif isinstance(current, list) and value is None:
+            continue
         else:
             setattr(instance, key, value)
 
