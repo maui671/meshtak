@@ -3,13 +3,14 @@ set -Eeuo pipefail
 
 APP_DIR=/opt/meshtak
 CONFIG_DIR=/etc/meshtak
+JSON_CONFIG=${CONFIG_DIR}/config.json
 PACKAGE_RECORD=${CONFIG_DIR}/installed_packages.txt
 SERVICE_FILE=/etc/systemd/system/meshtak.service
 ENV_FILE=/etc/default/meshtak
 HAL_BUILD_DIR=/opt/sx1302_hal
 LIBLORAGW_FILE=/usr/local/lib/libloragw.so
 SOURCE_DIR=/home/tdcadmin/meshtak
-WEB_PORT_DEFAULT=9443
+WEB_PORT_DEFAULT=443
 
 PROJECT_PACKAGES=(
   python3-venv
@@ -76,6 +77,17 @@ remove_firewall_rule(){
   fi
 }
 
+detect_web_port(){
+  local port=""
+  if [[ -f "$JSON_CONFIG" ]]; then
+    port="$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$JSON_CONFIG" | head -n 1 | grep -oE '[0-9]+' || true)"
+  fi
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    port="$WEB_PORT_DEFAULT"
+  fi
+  echo "$port"
+}
+
 purge_project_packages(){
   if ! command -v apt-get >/dev/null 2>&1; then
     echo "apt-get not found; skipping package purge."
@@ -86,6 +98,14 @@ purge_project_packages(){
   if (( ${#packages[@]} == 0 )); then
     packages=("${PROJECT_PACKAGES[@]}")
   fi
+
+  local filtered_packages=()
+  local package
+  for package in "${packages[@]}"; do
+    [[ "$package" == "git" ]] && continue
+    filtered_packages+=("$package")
+  done
+  packages=("${filtered_packages[@]}")
 
   if (( ${#packages[@]} == 0 )); then
     echo "No recorded MeshTAK-installed apt packages to purge."
@@ -122,8 +142,8 @@ main(){
 
   [[ "$(prompt_yes_no 'Continue with full MeshTAK uninstall?' 'n')" == y ]] || exit 0
 
-  read -r -p "Web UI port to remove from UFW [${WEB_PORT_DEFAULT}]: " web_port
-  web_port="${web_port:-$WEB_PORT_DEFAULT}"
+  local web_port
+  web_port="$(detect_web_port)"
 
   if [[ "$(prompt_yes_no 'Also purge MeshTAK apt packages?' 'y')" == y ]]; then
     purge_project_packages

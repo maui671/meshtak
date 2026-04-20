@@ -15,7 +15,7 @@ CERT_FILE=${CERT_DIR}/meshtak.crt
 KEY_FILE=${CERT_DIR}/meshtak.key
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HAL_BUILD_DIR=/opt/sx1302_hal
-WEB_PORT=9443
+WEB_PORT=443
 ACTIVE_ENABLED=true
 ACTIVE_CONN_TYPE=serial
 ACTIVE_SERIAL_PORT=/dev/ttyACM0
@@ -39,14 +39,14 @@ detect_serial(){ for p in /dev/serial/by-id/* /dev/ttyACM* /dev/ttyUSB*; do [[ -
 choose_serial(){ mapfile -t devs < <(detect_serial); echo; echo "--- Heltec / Active Meshtastic Serial Device ---"; if (( ${#devs[@]} == 0 )); then read -r -p "Enter device path [/dev/ttyACM0]: " ACTIVE_SERIAL_PORT; ACTIVE_SERIAL_PORT="${ACTIVE_SERIAL_PORT:-/dev/ttyACM0}"; return; fi; local i=1; for d in "${devs[@]}"; do echo "  ${i}) ${d}"; ((i++)); done; echo "  ${i}) Enter device path manually"; while true; do read -r -p "Choose serial device [1-${i}]: " c; if [[ "$c" =~ ^[0-9]+$ ]] && (( c>=1 && c<=${#devs[@]} )); then ACTIVE_SERIAL_PORT="${devs[$((c-1))]}"; return; elif [[ "$c" == "$i" ]]; then read -r -p "Enter serial device path [/dev/ttyACM0]: " ACTIVE_SERIAL_PORT; ACTIVE_SERIAL_PORT="${ACTIVE_SERIAL_PORT:-/dev/ttyACM0}"; return; fi; done; }
 ask_questions(){
  echo; echo "========================================"; echo " MeshTAK install configuration"; echo "========================================"; echo;
- read -r -p "Web UI port [9443]: " WEB_PORT; WEB_PORT="${WEB_PORT:-9443}";
+ read -r -p "Web UI port [443]: " WEB_PORT; WEB_PORT="${WEB_PORT:-443}";
  read -r -p "Device name [MeshTAK]: " DEVICE_NAME; DEVICE_NAME="${DEVICE_NAME:-MeshTAK}";
  echo; if [[ "$(prompt_yes_no 'Enable passive WM1303 collector?' 'y')" == y ]]; then PASSIVE_ENABLED=true; else PASSIVE_ENABLED=false; fi
  if [[ "$PASSIVE_ENABLED" == true ]]; then read -r -p "WM1303 SPI device [/dev/spidev0.0]: " SPI_DEV; SPI_DEV="${SPI_DEV:-/dev/spidev0.0}"; fi
  echo; if [[ "$(prompt_yes_no 'Enable active Meshtastic messaging radio (Heltec)?' 'y')" == y ]]; then ACTIVE_ENABLED=true; echo; echo "--- Active Meshtastic Connection Type ---"; echo "  1) Serial"; echo "  2) IP"; while true; do read -r -p "Choose connection type [1-2] [1]: " choice; choice="${choice:-1}"; case "$choice" in 1) ACTIVE_CONN_TYPE=serial; choose_serial; break;; 2) ACTIVE_CONN_TYPE=tcp; read -r -p "Meshtastic device IP/hostname: " ACTIVE_TCP_HOST; ACTIVE_TCP_HOST="${ACTIVE_TCP_HOST:-192.168.1.100}"; read -r -p "Meshtastic TCP port [4403]: " ACTIVE_TCP_PORT; ACTIVE_TCP_PORT="${ACTIVE_TCP_PORT:-4403}"; break;; esac; done; else ACTIVE_ENABLED=false; fi
  echo; if [[ "$(prompt_yes_no 'Enable TAK forwarding?' 'y')" == y ]]; then TAK_ENABLED=true; read -r -p "TAK host/IP [127.0.0.1]: " TAK_HOST; TAK_HOST="${TAK_HOST:-127.0.0.1}"; read -r -p "TAK port [8088]: " TAK_PORT; TAK_PORT="${TAK_PORT:-8088}"; read -r -p "TAK protocol tcp or udp [udp]: " TAK_PROTOCOL; TAK_PROTOCOL="${TAK_PROTOCOL:-udp}"; TAK_PROTOCOL="${TAK_PROTOCOL,,}"; [[ "$TAK_PROTOCOL" =~ ^(tcp|udp)$ ]] || TAK_PROTOCOL=udp; if [[ "$TAK_PROTOCOL" == tcp ]]; then if [[ "$(prompt_yes_no 'Use TLS for TAK TCP?' 'n')" == y ]]; then TAK_TLS=true; read -r -p "TAK CA cert path (optional): " TAK_CA_CERT; read -r -p "TAK client cert path (optional): " TAK_CLIENT_CERT; read -r -p "TAK client key path (optional): " TAK_CLIENT_KEY; fi; fi; fi
  echo; if [[ "$(prompt_yes_no 'Enable SPI/I2C on Raspberry Pi if raspi-config is present?' 'y')" == y ]]; then ENABLE_SPI_I2C=true; else ENABLE_SPI_I2C=false; fi
- if [[ "$(prompt_yes_no 'Open the Web UI port in UFW automatically?' 'y')" == y ]]; then OPEN_UFW=true; else OPEN_UFW=false; fi
+ OPEN_UFW=true
 }
 install_packages(){
   local packages=(
@@ -213,6 +213,8 @@ Wants=network-online.target
 Type=simple
 User=${RUN_USER}
 Group=${RUN_GROUP}
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
 ExecStart=${VENV_DIR}/bin/python ${APP_DIR}/run_server.py

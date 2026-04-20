@@ -183,8 +183,16 @@
 
                 <div class="message-compose">
                     <div class="message-compose__grid">
-                        <select id="message-target" class="toolbar-input"></select>
-                        <select id="message-channel" class="toolbar-input"></select>
+                        <div class="message-field">
+                            <label for="message-target">Destination</label>
+                            <select id="message-target" class="toolbar-input"></select>
+                            <div id="message-target-hint" class="message-field__hint">Leave this on broadcast to talk to a channel.</div>
+                        </div>
+                        <div class="message-field">
+                            <label for="message-channel">Channel</label>
+                            <select id="message-channel" class="toolbar-input"></select>
+                            <div id="message-channel-hint" class="message-field__hint">Choose the channel for broadcast traffic.</div>
+                        </div>
                     </div>
                     <textarea id="message-text" class="message-box" placeholder="Send via Heltec radio..."></textarea>
                     <div class="message-actions">
@@ -345,63 +353,18 @@
                         <div class="radio-card__head">
                             <div>
                                 <h3>Connected Radio</h3>
-                                <p>Common safe fields are applied through the Meshtastic CLI on the connected Heltec.</p>
+                                <p>Field layout follows the MeshTAK radio profile, but values are only authoritative after a live export is returned from the connected radio.</p>
                             </div>
                             <div class="radio-card__actions">
                                 <button id="radio-config-refresh" class="action-btn" type="button">Refresh</button>
                                 <button id="radio-config-reconnect" class="action-btn" type="button">Reconnect</button>
                             </div>
                         </div>
-                        <div class="radio-field-grid">
-                            <div class="radio-field radio-field--wide">
-                                <label for="radio-config-long-name">Long Name</label>
-                                <input id="radio-config-long-name" type="text" placeholder="MeshTAK Command">
-                            </div>
-                            <div class="radio-field">
-                                <label for="radio-config-short-name">Short Name</label>
-                                <input id="radio-config-short-name" type="text" maxlength="4" placeholder="MTAK">
-                            </div>
-                            <div class="radio-field">
-                                <label for="radio-config-region">Region</label>
-                                <select id="radio-config-region">
-                                    <option value="">Leave unchanged</option>
-                                    <option value="US">US</option>
-                                    <option value="EU_868">EU 868</option>
-                                    <option value="EU_433">EU 433</option>
-                                    <option value="ANZ">ANZ</option>
-                                    <option value="CN">CN</option>
-                                    <option value="JP">JP</option>
-                                    <option value="KR">KR</option>
-                                    <option value="TW">TW</option>
-                                    <option value="RU">RU</option>
-                                    <option value="IN">IN</option>
-                                    <option value="NZ_865">NZ 865</option>
-                                    <option value="TH">TH</option>
-                                    <option value="UA_433">UA 433</option>
-                                    <option value="UA_868">UA 868</option>
-                                </select>
-                            </div>
-                            <div class="radio-field">
-                                <label for="radio-config-modem">Modem Preset</label>
-                                <select id="radio-config-modem">
-                                    <option value="">Leave unchanged</option>
-                                    <option value="LONG_FAST">Long Fast</option>
-                                    <option value="LONG_SLOW">Long Slow</option>
-                                    <option value="VERY_LONG_SLOW">Very Long Slow</option>
-                                    <option value="MEDIUM_SLOW">Medium Slow</option>
-                                    <option value="MEDIUM_FAST">Medium Fast</option>
-                                    <option value="SHORT_SLOW">Short Slow</option>
-                                    <option value="SHORT_FAST">Short Fast</option>
-                                </select>
-                            </div>
-                            <div class="radio-field">
-                                <label for="radio-config-tx-power">TX Power</label>
-                                <input id="radio-config-tx-power" type="number" min="0" max="30" placeholder="Leave unchanged">
-                            </div>
-                            <div class="radio-field">
-                                <label for="radio-config-position">Position Interval (sec)</label>
-                                <input id="radio-config-position" type="number" min="0" placeholder="Leave unchanged">
-                            </div>
+                        <div id="radio-config-warning" class="radio-config-warning hidden"></div>
+                        <div id="radio-config-fields" class="radio-config-fields"></div>
+                        <div class="radio-field radio-field--wide">
+                            <label for="radio-config-yaml">Generated Radio YAML</label>
+                            <textarea id="radio-config-yaml" class="radio-output" readonly placeholder="Generated radio configure payload will appear here."></textarea>
                         </div>
                     </article>
 

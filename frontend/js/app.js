@@ -33,6 +33,98 @@ let latestDevice = null;
 let latestSettings = {};
 let latestRadioStatus = { connected: false, status: 'unknown' };
 let latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
+let latestRadioConfigData = null;
+let radioConfigPollTimer = null;
+
+const RADIO_CONFIG_SCHEMA = [
+    {
+        title: 'Identity',
+        fields: [
+            { path: 'owner', label: 'Owner', type: 'text', wide: true },
+            { path: 'owner_short', label: 'Owner Short', type: 'text' },
+            { path: 'canned_messages', label: 'Canned Messages', type: 'text', wide: true },
+            { path: 'channel_url', label: 'Channel URL', type: 'textarea', wide: true },
+        ],
+    },
+    {
+        title: 'Bluetooth / Device / Display',
+        fields: [
+            { path: 'config.bluetooth.enabled', label: 'Bluetooth Enabled', type: 'boolean' },
+            { path: 'config.bluetooth.fixedPin', label: 'Bluetooth PIN', type: 'number' },
+            { path: 'config.bluetooth.mode', label: 'Bluetooth Mode', type: 'text' },
+            { path: 'config.device.nodeInfoBroadcastSecs', label: 'Node Info Broadcast Secs', type: 'number' },
+            { path: 'config.device.tzdef', label: 'TZ Definition', type: 'text', wide: true },
+            { path: 'config.display.screenOnSecs', label: 'Screen On Secs', type: 'number' },
+        ],
+    },
+    {
+        title: 'LoRa',
+        fields: [
+            { path: 'config.lora.region', label: 'Region', type: 'text' },
+            { path: 'config.lora.bandwidth', label: 'Bandwidth', type: 'number' },
+            { path: 'config.lora.codingRate', label: 'Coding Rate', type: 'number' },
+            { path: 'config.lora.hopLimit', label: 'Hop Limit', type: 'number' },
+            { path: 'config.lora.spreadFactor', label: 'Spread Factor', type: 'number' },
+            { path: 'config.lora.txPower', label: 'TX Power', type: 'number' },
+            { path: 'config.lora.usePreset', label: 'Use Preset', type: 'boolean' },
+            { path: 'config.lora.txEnabled', label: 'TX Enabled', type: 'boolean' },
+            { path: 'config.lora.sx126xRxBoostedGain', label: 'SX126x RX Boosted Gain', type: 'boolean' },
+            { path: 'config.lora.configOkToMqtt', label: 'Config OK To MQTT', type: 'boolean' },
+        ],
+    },
+    {
+        title: 'Position / Power / Network',
+        fields: [
+            { path: 'config.network.wifiSsid', label: 'WiFi SSID', type: 'text', wide: true },
+            { path: 'config.position.broadcastSmartMinimumDistance', label: 'Smart Min Distance', type: 'number' },
+            { path: 'config.position.broadcastSmartMinimumIntervalSecs', label: 'Smart Min Interval', type: 'number' },
+            { path: 'config.position.gpsEnGpio', label: 'GPS EN GPIO', type: 'number' },
+            { path: 'config.position.gpsMode', label: 'GPS Mode', type: 'text' },
+            { path: 'config.position.gpsUpdateInterval', label: 'GPS Update Interval', type: 'number' },
+            { path: 'config.position.positionBroadcastSecs', label: 'Position Broadcast Secs', type: 'number' },
+            { path: 'config.position.positionBroadcastSmartEnabled', label: 'Smart Position Broadcast', type: 'boolean' },
+            { path: 'config.position.positionFlags', label: 'Position Flags', type: 'number' },
+            { path: 'config.power.lsSecs', label: 'LS Secs', type: 'number' },
+            { path: 'config.power.minWakeSecs', label: 'Min Wake Secs', type: 'number' },
+            { path: 'config.power.sdsSecs', label: 'SDS Secs', type: 'number' },
+            { path: 'config.power.waitBluetoothSecs', label: 'Wait Bluetooth Secs', type: 'number' },
+        ],
+    },
+    {
+        title: 'Security / Ambient / Modules',
+        fields: [
+            { path: 'config.security.privateKey', label: 'Private Key', type: 'text', wide: true },
+            { path: 'config.security.publicKey', label: 'Public Key', type: 'text', wide: true },
+            { path: 'config.security.serialEnabled', label: 'Serial Enabled', type: 'boolean' },
+            { path: 'module_config.ambientLighting.red', label: 'Ambient Red', type: 'number' },
+            { path: 'module_config.ambientLighting.green', label: 'Ambient Green', type: 'number' },
+            { path: 'module_config.ambientLighting.blue', label: 'Ambient Blue', type: 'number' },
+            { path: 'module_config.ambientLighting.current', label: 'Ambient Current', type: 'number' },
+            { path: 'module_config.cannedMessage.allowInputSource', label: 'Canned Message Input Source', type: 'text', wide: true },
+            { path: 'module_config.cannedMessage.enabled', label: 'Canned Message Enabled', type: 'boolean' },
+            { path: 'module_config.detectionSensor.detectionTriggerType', label: 'Detection Trigger Type', type: 'text' },
+            { path: 'module_config.detectionSensor.minimumBroadcastSecs', label: 'Detection Min Broadcast Secs', type: 'number' },
+            { path: 'module_config.serial.baud', label: 'Serial Baud', type: 'text' },
+            { path: 'module_config.serial.enabled', label: 'Serial Module Enabled', type: 'boolean' },
+            { path: 'module_config.telemetry.deviceUpdateInterval', label: 'Telemetry Update Interval', type: 'number' },
+        ],
+    },
+    {
+        title: 'MQTT',
+        fields: [
+            { path: 'module_config.mqtt.address', label: 'MQTT Address', type: 'text', wide: true },
+            { path: 'module_config.mqtt.username', label: 'MQTT Username', type: 'text' },
+            { path: 'module_config.mqtt.password', label: 'MQTT Password', type: 'text' },
+            { path: 'module_config.mqtt.root', label: 'MQTT Root', type: 'text', wide: true },
+            { path: 'module_config.mqtt.encryptionEnabled', label: 'MQTT Encryption', type: 'boolean' },
+            { path: 'module_config.mqtt.mapReportingEnabled', label: 'Map Reporting Enabled', type: 'boolean' },
+            { path: 'module_config.mqtt.proxyToClientEnabled', label: 'Proxy To Client Enabled', type: 'boolean' },
+            { path: 'module_config.mqtt.mapReportSettings.positionPrecision', label: 'Map Position Precision', type: 'number' },
+            { path: 'module_config.mqtt.mapReportSettings.publishIntervalSecs', label: 'Map Publish Interval', type: 'number' },
+            { path: 'module_config.mqtt.mapReportSettings.shouldReportLocation', label: 'Should Report Location', type: 'boolean' },
+        ],
+    },
+];
 
 document.addEventListener('DOMContentLoaded', async () => {
     const nodeMap = new NodeMap('map');
@@ -233,7 +325,7 @@ async function _refreshRadioStatus() {
         const status = data.status || (data.connected ? 'connected' : 'disconnected');
 
         _setText('msg-status', status);
-        _setText('stat-radio-val', data.connected ? 'Connected' : 'Offline');
+        _setText('stat-radio-val', _moduleLabel(status, true));
 
         const settingsStatus = document.getElementById('radio-settings-status');
         if (settingsStatus) {
@@ -274,7 +366,7 @@ async function _refreshRadioNodes() {
 
             const broadcastOpt = document.createElement('option');
             broadcastOpt.value = '';
-            broadcastOpt.textContent = 'Broadcast';
+            broadcastOpt.textContent = 'Channel Broadcast';
             target.appendChild(broadcastOpt);
 
             _sortedNodes(nodes).forEach((node) => {
@@ -305,7 +397,7 @@ async function _refreshChannels() {
     try {
         const res = await fetch('/api/radio/channels');
         const data = await res.json();
-        const channels = data.channels || [];
+        const channels = (data.channels || []).length ? data.channels : [{ name: 'Broadcast', index: 0, pinned: true }];
         latestChannels = channels.slice();
 
         const select = document.getElementById('message-channel');
@@ -318,7 +410,7 @@ async function _refreshChannels() {
                 const name = _channelName(ch);
                 const opt = document.createElement('option');
                 opt.value = String(idx);
-                opt.textContent = ch.pinned ? `${name} *` : name;
+                opt.textContent = _channelOptionLabel(ch);
                 opt.dataset.channelName = name;
                 select.appendChild(opt);
             });
@@ -803,6 +895,8 @@ function _saveWidgetState(state, storageKey) {
 function _syncMessageMode() {
     const target = document.getElementById('message-target');
     const channel = document.getElementById('message-channel');
+    const targetHint = document.getElementById('message-target-hint');
+    const channelHint = document.getElementById('message-channel-hint');
     if (!target || !channel) {
         return;
     }
@@ -811,6 +905,18 @@ function _syncMessageMode() {
     const radioUnavailable = !!target.disabled;
     channel.disabled = radioUnavailable || direct;
     channel.title = direct ? 'Direct messages do not use a broadcast channel' : '';
+    if (targetHint) {
+        targetHint.textContent = direct
+            ? 'Direct message selected. This will go only to the chosen node.'
+            : 'Leave this on broadcast to talk to a channel.';
+    }
+    if (channelHint) {
+        channelHint.textContent = radioUnavailable
+            ? 'Radio offline. Messaging is unavailable right now.'
+            : direct
+            ? 'Channel selection is disabled for direct messages.'
+            : 'Choose the channel for broadcast traffic.';
+    }
 }
 
 function _renderMessages({ preserveScroll = false, resetScroll = false } = {}) {
@@ -1518,6 +1624,12 @@ function _renderAuthState() {
     if (!isAdmin && window.location.hash === '#radio-config') {
         history.replaceState(null, '', '#dashboard');
     }
+    if (isAdmin) {
+        _loadRadioConfig();
+    } else {
+        _clearRadioConfigPoll();
+        latestRadioConfigData = null;
+    }
 }
 
 async function _loadUserAccounts() {
@@ -1663,9 +1775,10 @@ function _bindCommandShell(nodeMap) {
             : 'dashboard';
         const normalized = isAdminViewAllowed(requested) ? requested : 'dashboard';
         const dashboardMode = normalized === 'dashboard';
+        const dashboardViews = new Set(['dashboard', 'map', 'nodes', 'messages']);
 
         document.querySelectorAll('[data-view]').forEach((view) => {
-            const isTarget = dashboardMode || view.dataset.view === normalized;
+            const isTarget = dashboardMode ? dashboardViews.has(view.dataset.view) : view.dataset.view === normalized;
             const isBlocked = view.dataset.view === 'radio-config' && !isAdminViewAllowed('radio-config');
             view.classList.toggle('active', isTarget && !isBlocked);
         });
@@ -1681,6 +1794,9 @@ function _bindCommandShell(nodeMap) {
 
         if (normalized === 'map' || dashboardMode) {
             nodeMap.invalidateSize();
+        }
+        if (normalized === 'radio-config' && isAdminViewAllowed('radio-config')) {
+            _loadRadioConfig();
         }
     };
 
@@ -1718,11 +1834,17 @@ function _refreshCommandBanner() {
     const nodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
     const packetCount = packetFeedInstance?.getTotalCount?.() || _totalPackets || 0;
     const radioConnected = !!latestRadioStatus.connected || latestRadioStatus.status === 'connected';
+    const radioConfigPending = !!latestRadioConfigData?.config_sync?.pending;
     let posture = 'Online';
 
     banner.classList.remove('status-banner--degraded', 'status-banner--offline');
 
-    if (!radioConnected && !nodes.length && !packetCount) {
+    if (radioConfigPending) {
+        posture = 'Syncing';
+        banner.classList.add('status-banner--degraded');
+    } else if (['initializing', 'reconfiguring'].includes(String(latestRadioStatus.status || '').toLowerCase())) {
+        posture = 'Standby';
+    } else if (!radioConnected && !nodes.length && !packetCount) {
         posture = 'Offline';
         banner.classList.add('status-banner--offline');
     } else if (!radioConnected) {
@@ -1744,6 +1866,9 @@ function _moduleLabel(status, enabled = true) {
     if (['running', 'connected', 'online'].includes(text)) {
         return text.charAt(0).toUpperCase() + text.slice(1);
     }
+    if (['initializing', 'reconfiguring', 'starting'].includes(text)) {
+        return 'Standby';
+    }
     if (['stopped', 'disconnected', 'offline', 'error'].includes(text)) {
         return text.charAt(0).toUpperCase() + text.slice(1);
     }
@@ -1757,13 +1882,19 @@ function _renderSystemMessages() {
     }
     const messages = [];
     if (!latestRadioStatus.connected) {
-        messages.push('Radio offline.');
+        const radioState = String(latestRadioStatus.status || '').toLowerCase();
+        messages.push(['initializing', 'reconfiguring'].includes(radioState) ? 'Radio pulling initial config. Stand by.' : 'Radio offline.');
     }
-    if (latestSettings.collector?.enabled === false || ['stopped', 'error'].includes(String(latestSettings.collector?.status || '').toLowerCase())) {
+    if (latestSettings.collector?.enabled === false || ['stopped', 'error', 'initializing'].includes(String(latestSettings.collector?.status || '').toLowerCase())) {
         messages.push(`Collector ${_moduleLabel(latestSettings.collector?.status, latestSettings.collector?.enabled).toLowerCase()}.`);
     }
     if (!latestSettings.tak?.enabled) {
         messages.push('TAK disabled.');
+    }
+    if (latestRadioConfigData?.config_sync?.pending) {
+        messages.push('Live radio config export requested. Current dashboard values may be incomplete until the radio responds.');
+    } else if (latestRadioConfigData?.config_sync?.status === 'error') {
+        messages.push(`Live radio config export failed: ${latestRadioConfigData?.config_sync?.last_error || 'unknown error'}.`);
     }
     el.innerHTML = messages.length
         ? messages.map((message) => `<div>${_escapeHtml(message)}</div>`).join('')
@@ -1773,7 +1904,7 @@ function _renderSystemMessages() {
 function _bindRadioConfigControls() {
     const refresh = document.getElementById('radio-config-refresh');
     if (refresh) {
-        refresh.addEventListener('click', _loadRadioConfig);
+        refresh.addEventListener('click', () => _loadRadioConfig(true));
     }
 
     const reconnect = document.getElementById('radio-config-reconnect');
@@ -1818,32 +1949,82 @@ function _bindRadioConfigControls() {
         importButton.addEventListener('click', _importPrivateChannel);
     }
 
-    _loadRadioConfig();
 }
 
-async function _loadRadioConfig() {
+function _clearRadioConfigPoll() {
+    if (radioConfigPollTimer) {
+        clearTimeout(radioConfigPollTimer);
+        radioConfigPollTimer = null;
+    }
+}
+
+function _scheduleRadioConfigPoll() {
+    _clearRadioConfigPoll();
+    radioConfigPollTimer = setTimeout(() => {
+        _loadRadioConfig(false);
+    }, 3000);
+}
+
+function _renderRadioConfigWarning(sync) {
+    const warning = document.getElementById('radio-config-warning');
+    if (!warning) {
+        return;
+    }
+    const pending = !!sync?.pending;
+    const failed = sync?.status === 'error';
+    const message = sync?.message || '';
+    if (!pending && !failed) {
+        warning.classList.add('hidden');
+        warning.textContent = '';
+        return;
+    }
+    warning.classList.remove('hidden');
+    warning.textContent = pending
+        ? `${message} Until the export returns, data shown elsewhere in the UI may not be accurate.`
+        : `${message} The UI is waiting on a successful live export before treating radio config data as authoritative.`;
+}
+
+async function _loadRadioConfig(force = false) {
     try {
-        const response = await fetch('/api/radio/config');
+        const response = await fetch(`/api/radio/config${force ? '?force=true' : ''}`);
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.detail || 'Unable to load radio config');
         }
 
+        _clearRadioConfigPoll();
+        latestRadioConfigData = data;
         const connection = data.connection || {};
-        _setText('radio-config-status', data.connected ? 'Radio connected' : 'Radio offline');
+        const sync = data.config_sync || {};
+        const authoritative = !!sync.authoritative;
+        const pending = !!sync.pending;
+        _setText(
+            'radio-config-status',
+            pending ? 'Awaiting radio export' : authoritative ? 'Live export loaded' : (data.connected ? 'Radio connected' : 'Radio offline'),
+        );
         _setText('radio-config-connection', _formatRadioConnection(connection));
+        _renderRadioConfigWarning(sync);
         _renderStoredChannels(data.stored_channel_keys || {}, data.channels || []);
-
-        const myInfo = data.radio?.myInfo || {};
-        const user = myInfo.my_node_info?.user || myInfo.user || {};
-        if (user.longName && !document.getElementById('radio-config-long-name')?.value) {
-            _setValue('radio-config-long-name', user.longName);
+        _renderRadioConfigEditor(data.form_values || {});
+        if (authoritative && data.exported_yaml) {
+            _setValue('radio-config-yaml', data.exported_yaml);
+        } else {
+            _refreshRadioYamlPreview();
         }
-        if (user.shortName && !document.getElementById('radio-config-short-name')?.value) {
-            _setValue('radio-config-short-name', user.shortName);
+        if (pending) {
+            _scheduleRadioConfigPoll();
         }
+        _refreshCommandBanner();
+        _renderSystemMessages();
     } catch (error) {
+        _clearRadioConfigPoll();
+        latestRadioConfigData = null;
+        _renderRadioConfigEditor({});
+        _renderRadioConfigWarning({ status: 'error', message: error.message || 'Unable to load radio config' });
+        _setRadioOutput('');
         _setText('radio-config-status', error.message || 'Unable to load radio config');
+        _refreshCommandBanner();
+        _renderSystemMessages();
     }
 }
 
@@ -1857,22 +2038,153 @@ function _formatRadioConnection(connection) {
 
 function _radioApplyPayload() {
     return {
-        long_name: document.getElementById('radio-config-long-name')?.value.trim(),
-        short_name: document.getElementById('radio-config-short-name')?.value.trim(),
-        region: document.getElementById('radio-config-region')?.value,
-        modem_preset: document.getElementById('radio-config-modem')?.value,
-        tx_power: document.getElementById('radio-config-tx-power')?.value,
-        position_broadcast_secs: document.getElementById('radio-config-position')?.value,
+        config_payload: _buildRadioConfigPayloadFromForm(),
     };
 }
 
 async function _applyRadioConfig() {
     const result = await _postJson('/api/radio/config/apply', _radioApplyPayload(), 'radio-config-status', 'Radio config saved');
     if (result) {
-        _setRadioOutput(JSON.stringify(result, null, 2));
+        _setRadioOutput(`Applied MeshTAK radio config:\n${JSON.stringify(result.config_payload || {}, null, 2)}\n\nCLI result:\n${JSON.stringify(result.command || result, null, 2)}`);
         await _refreshRadioUi();
         await _loadRadioConfig();
     }
+}
+
+function _renderRadioConfigEditor(formValues) {
+    const host = document.getElementById('radio-config-fields');
+    if (!host) {
+        return;
+    }
+    host.innerHTML = RADIO_CONFIG_SCHEMA.map((section) => `
+        <article class="radio-config-section">
+            <h4>${_escapeHtml(section.title)}</h4>
+            <div class="radio-field-grid">
+                ${section.fields.map((field) => _renderRadioField(field, formValues[field.path])).join('')}
+            </div>
+        </article>
+    `).join('');
+    host.querySelectorAll('[data-radio-path]').forEach((el) => {
+        el.addEventListener('input', _refreshRadioYamlPreview);
+        el.addEventListener('change', _refreshRadioYamlPreview);
+    });
+}
+
+function _renderRadioField(field, value) {
+    const wideClass = field.wide ? ' radio-field--wide' : '';
+    const fieldId = `radio-field-${field.path.replace(/[^a-zA-Z0-9]+/g, '-')}`;
+    if (field.type === 'boolean') {
+        return `
+            <div class="radio-field${wideClass}">
+                <label for="${fieldId}">${_escapeHtml(field.label)}</label>
+                <select id="${fieldId}" data-radio-path="${_escapeHtml(field.path)}" data-radio-type="boolean">
+                    <option value="">Unset</option>
+                    <option value="true" ${value === true ? 'selected' : ''}>True</option>
+                    <option value="false" ${value === false ? 'selected' : ''}>False</option>
+                </select>
+            </div>
+        `;
+    }
+    if (field.type === 'textarea') {
+        return `
+            <div class="radio-field${wideClass}">
+                <label for="${fieldId}">${_escapeHtml(field.label)}</label>
+                <textarea id="${fieldId}" data-radio-path="${_escapeHtml(field.path)}" data-radio-type="text">${_escapeHtml(value ?? '')}</textarea>
+            </div>
+        `;
+    }
+    const inputType = field.type === 'number' ? 'number' : 'text';
+    return `
+        <div class="radio-field${wideClass}">
+            <label for="${fieldId}">${_escapeHtml(field.label)}</label>
+            <input id="${fieldId}" type="${inputType}" value="${_escapeHtml(value ?? '')}" data-radio-path="${_escapeHtml(field.path)}" data-radio-type="${_escapeHtml(field.type)}">
+        </div>
+    `;
+}
+
+function _buildRadioConfigPayloadFromForm() {
+    const payload = {};
+    document.querySelectorAll('[data-radio-path]').forEach((el) => {
+        const path = el.dataset.radioPath;
+        const type = el.dataset.radioType || 'text';
+        let value = el.value;
+        if (value === '') {
+            return;
+        }
+        if (type === 'number') {
+            value = Number(value);
+            if (Number.isNaN(value)) {
+                return;
+            }
+        } else if (type === 'boolean') {
+            value = value === 'true';
+        }
+        _setNestedValue(payload, path, value);
+    });
+    return payload;
+}
+
+function _setNestedValue(target, path, value) {
+    const parts = String(path || '').split('.').filter(Boolean);
+    if (!parts.length) {
+        return;
+    }
+    let current = target;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+        const part = parts[i];
+        if (!current[part] || typeof current[part] !== 'object' || Array.isArray(current[part])) {
+            current[part] = {};
+        }
+        current = current[part];
+    }
+    current[parts[parts.length - 1]] = value;
+}
+
+function _refreshRadioYamlPreview() {
+    const preview = document.getElementById('radio-config-yaml');
+    if (!preview) {
+        return;
+    }
+    preview.value = _toSimpleYaml(_buildRadioConfigPayloadFromForm());
+}
+
+function _toSimpleYaml(value, depth = 0) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => {
+            if (item && typeof item === 'object') {
+                const nested = _toSimpleYaml(item, depth + 1);
+                return `${'  '.repeat(depth)}-\n${nested}`;
+            }
+            return `${'  '.repeat(depth)}- ${_toYamlScalar(item)}`;
+        }).join('\n');
+    }
+    if (typeof value === 'object') {
+        return Object.entries(value).map(([key, entry]) => {
+            if (entry && typeof entry === 'object') {
+                const nested = _toSimpleYaml(entry, depth + 1);
+                return `${'  '.repeat(depth)}${key}:\n${nested}`;
+            }
+            return `${'  '.repeat(depth)}${key}: ${_toYamlScalar(entry)}`;
+        }).join('\n');
+    }
+    return `${'  '.repeat(depth)}${_toYamlScalar(value)}`;
+}
+
+function _toYamlScalar(value) {
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+    }
+    const text = String(value ?? '');
+    if (!text) {
+        return '""';
+    }
+    if (/^[A-Za-z0-9_.:/-]+$/.test(text)) {
+        return text;
+    }
+    return JSON.stringify(text);
 }
 
 async function _runRadioCli(dryRun) {
@@ -1941,13 +2253,23 @@ function _renderStoredChannels(storedKeys, bridgeChannels) {
     }
     const bridgeByName = new Map((bridgeChannels || []).map((channel) => [String(channel.name || ''), channel]));
     const rows = Object.values(storedKeys || {});
-    if (!rows.length) {
-        list.textContent = 'No private channels stored.';
+    const bridgeOnlyRows = (bridgeChannels || [])
+        .filter((channel) => channel && channel.name && !storedKeys?.[channel.name])
+        .map((channel) => ({
+            name: channel.name,
+            psk: '',
+            masked: channel.pinned ? 'radio channel' : 'configured on radio',
+            index: channel.index,
+            bridge_only: true,
+        }));
+    const allRows = [...rows, ...bridgeOnlyRows];
+    if (!allRows.length) {
+        list.textContent = 'No private channels stored or discovered on the radio yet.';
         return;
     }
-    list.innerHTML = rows.map((row) => {
+    list.innerHTML = allRows.map((row) => {
         const channel = bridgeByName.get(String(row.name || '')) || {};
-        const index = channel.index ?? 1;
+        const index = row.index ?? channel.index ?? 1;
         const exportData = encodeURIComponent(JSON.stringify({ name: row.name, index, psk: row.psk }));
         return `
             <div class="radio-channel-item">
@@ -1955,7 +2277,7 @@ function _renderStoredChannels(storedKeys, bridgeChannels) {
                     <strong>${_escapeHtml(row.name || 'Unnamed')}</strong>
                     <span>Index ${_escapeHtml(index)} | ${_escapeHtml(row.masked || 'stored')}</span>
                 </div>
-                <button class="action-btn" type="button" data-radio-export="${exportData}">Export</button>
+                <button class="action-btn" type="button" data-radio-export="${exportData}" ${row.bridge_only ? 'disabled title="Export requires a stored PSK"' : ''}>Export</button>
             </div>
         `;
     }).join('');
@@ -1965,6 +2287,13 @@ function _renderStoredChannels(storedKeys, bridgeChannels) {
             _showChannelExport({ export: _buildClientChannelExport(data.name, Number(data.index || 1), data.psk) });
         });
     });
+}
+
+function _channelOptionLabel(channel) {
+    const name = _channelName(channel);
+    const idx = Number.isFinite(Number(channel?.index)) ? Number(channel.index) : 0;
+    const suffix = idx === 0 ? 'ch0' : `ch${idx}`;
+    return channel?.pinned ? `${name} (${suffix}) *` : `${name} (${suffix})`;
 }
 
 function _showChannelExport(result) {

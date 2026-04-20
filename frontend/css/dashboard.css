@@ -716,10 +716,10 @@ textarea {
 }
 
 .radio-card {
-    border: 1px solid rgba(100, 178, 255, 0.24);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: linear-gradient(145deg, rgba(5, 20, 39, 0.78), rgba(3, 12, 26, 0.9));
-    box-shadow: inset 0 1px 0 rgba(167, 210, 255, 0.08), 0 22px 54px rgba(0, 5, 16, 0.22);
+    background: rgba(5, 14, 6, 0.72);
+    box-shadow: inset 0 1px 0 rgba(232, 245, 181, 0.08), 0 22px 54px rgba(0, 5, 16, 0.22);
     padding: 16px;
 }
 
@@ -755,6 +755,38 @@ textarea {
     gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
+}
+
+.radio-config-warning {
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255, 179, 71, 0.32);
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(54, 31, 9, 0.82), rgba(21, 13, 4, 0.76));
+    color: #ffd79a;
+    font-size: 12px;
+    line-height: 1.55;
+    box-shadow: inset 0 1px 0 rgba(255, 229, 178, 0.08);
+}
+
+.radio-config-fields {
+    display: grid;
+    gap: 16px;
+}
+
+.radio-config-section {
+    border: 1px solid rgba(191, 233, 139, 0.12);
+    border-radius: 10px;
+    background: rgba(8, 22, 9, 0.52);
+    padding: 14px;
+}
+
+.radio-config-section h4 {
+    margin: 0 0 12px;
+    color: var(--mesh-hi);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
 }
 
 .radio-field-grid {
@@ -802,9 +834,9 @@ textarea {
     justify-content: space-between;
     align-items: center;
     gap: 12px;
-    border: 1px solid rgba(100, 178, 255, 0.18);
+    border: 1px solid rgba(191, 233, 139, 0.12);
     border-radius: 10px;
-    background: rgba(7, 24, 48, 0.58);
+    background: rgba(8, 22, 9, 0.68);
     padding: 12px;
 }
 
@@ -840,7 +872,7 @@ textarea {
 
 .radio-save-rail .settings-btn {
     pointer-events: auto;
-    box-shadow: 0 12px 36px rgba(0, 8, 20, 0.45);
+    box-shadow: 0 12px 36px rgba(0, 8, 20, 0.32);
 }
 
 .workspace {
@@ -1205,6 +1237,26 @@ textarea {
 .message-compose__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-bottom: 12px;
+}
+
+.message-field {
+    display: grid;
+    gap: 6px;
+}
+
+.message-field label {
+    color: var(--t2);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+
+.message-field__hint {
+    color: var(--t3);
+    font-size: 11px;
+    line-height: 1.35;
+    min-height: 28px;
 }
 
 .message-box {

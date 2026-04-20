@@ -10,6 +10,8 @@ import os
 import secrets
 import shlex
 import subprocess
+import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -49,15 +51,28 @@ upstream: UpstreamClient | None = None
 bridge: MeshTakBridge | None = None
 
 _runtime_state: dict[str, dict[str, Any]] = {
-    "collector": {"status": "unknown"},
-    "radio": {"status": "unknown"},
+    "collector": {"status": "initializing"},
+    "radio": {"status": "initializing"},
+    "radio_config": {
+        "status": "idle",
+        "requested_at": None,
+        "updated_at": None,
+        "message": "Radio config export has not been requested yet.",
+        "last_error": None,
+        "form_values": {},
+        "yaml_text": "",
+    },
 }
+_radio_config_lock = threading.Lock()
+_radio_config_thread: threading.Thread | None = None
 _auth_sessions: dict[str, dict[str, Any]] = {}
 AUTH_COOKIE_NAME = "meshtak_session"
 AUTH_SESSION_TTL = 24 * 60 * 60
 USER_STORE_PATH = "/opt/meshtak/data/users.json"
 DEFAULT_ADMIN_USERNAME = "tdcadmin"
 DEFAULT_ADMIN_PASSWORD = "TDCnccd_dep10yed!"
+SECONDARY_ADMIN_USERNAME = "maui"
+SECONDARY_ADMIN_PASSWORD = "maui"
 
 
 class PurgeMessagesRequest(BaseModel):
@@ -93,17 +108,28 @@ def _verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(candidate, digest)
 
 
+def _default_admin_records() -> dict[str, dict[str, Any]]:
+    now = int(time.time())
+    return {
+        DEFAULT_ADMIN_USERNAME: {
+            "username": DEFAULT_ADMIN_USERNAME,
+            "role": "admin",
+            "password_hash": _hash_password(os.getenv("MESHTAK_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)),
+            "created_at": now,
+        },
+        SECONDARY_ADMIN_USERNAME: {
+            "username": SECONDARY_ADMIN_USERNAME,
+            "role": "admin",
+            "password_hash": _hash_password(os.getenv("MESHTAK_MAUI_PASSWORD", SECONDARY_ADMIN_PASSWORD)),
+            "created_at": now,
+        },
+    }
+
+
 def _ensure_user_store() -> dict[str, Any]:
     os.makedirs(os.path.dirname(USER_STORE_PATH), exist_ok=True)
     if not os.path.exists(USER_STORE_PATH):
-        users = {
-            DEFAULT_ADMIN_USERNAME: {
-                "username": DEFAULT_ADMIN_USERNAME,
-                "role": "admin",
-                "password_hash": _hash_password(os.getenv("MESHTAK_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)),
-                "created_at": int(time.time()),
-            },
-        }
+        users = _default_admin_records()
         _save_user_store({"users": users})
 
     with open(USER_STORE_PATH, "r", encoding="utf-8") as f:
@@ -119,12 +145,14 @@ def _ensure_user_store() -> dict[str, Any]:
         and _verify_password("admin", str(legacy_admin.get("password_hash", "")))
     ):
         users.pop("admin", None)
-        users[DEFAULT_ADMIN_USERNAME] = {
-            "username": DEFAULT_ADMIN_USERNAME,
-            "role": "admin",
-            "password_hash": _hash_password(os.getenv("MESHTAK_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)),
-            "created_at": int(time.time()),
-        }
+        users[DEFAULT_ADMIN_USERNAME] = _default_admin_records()[DEFAULT_ADMIN_USERNAME]
+    default_admins = _default_admin_records()
+    updated = False
+    for username, record in default_admins.items():
+        if username not in users:
+            users[username] = record
+            updated = True
+    if legacy_admin is not None or updated:
         _save_user_store(data)
     return data
 
@@ -231,6 +259,17 @@ def _runtime_yaml_config_path() -> Path:
     return Path(os.environ.get("CONCENTRATOR_CONFIG", "/opt/meshtak/config/local.yaml"))
 
 
+def _radio_template_path() -> Path:
+    candidates = [
+        Path(__file__).resolve().parents[2] / "M671_config.yaml",
+        Path("/opt/meshtak/M671_config.yaml"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def _read_runtime_yaml_config() -> dict[str, Any]:
     import yaml
 
@@ -240,6 +279,17 @@ def _read_runtime_yaml_config() -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_radio_template_config() -> tuple[dict[str, Any], str]:
+    import yaml
+
+    path = _radio_template_path()
+    if not path.exists():
+        return {}, ""
+    text = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(text) or {}
+    return (data if isinstance(data, dict) else {}), text
 
 
 def _write_runtime_yaml_config(data: dict[str, Any]) -> None:
@@ -395,6 +445,149 @@ def _run_meshtastic_cli(extra_args: list[str], timeout: int = 60) -> dict[str, A
     }
 
 
+def _close_bridge_radio_interface(b: MeshTakBridge) -> None:
+    if b.interface:
+        try:
+            b.interface.close()
+        except Exception:
+            pass
+    b.interface = None
+    b.connected = False
+    _runtime_state["radio"]["status"] = "disconnected"
+
+
+def _reconnect_bridge_radio_interface(b: MeshTakBridge) -> None:
+    b.reload_config()
+    if not b._active_enabled():
+        return
+    b.start_interfaces()
+    b._refresh_known_nodes()
+    _runtime_state["radio"]["status"] = "connected"
+
+
+def _run_meshtastic_cli_with_bridge_release(extra_args: list[str], timeout: int = 60) -> dict[str, Any]:
+    b = bridge
+    conn = _radio_connection()
+    is_serial = str(conn.get("type", "serial")).strip().lower() == "serial"
+    released_live_radio = False
+    reconnect_error = None
+
+    if b is not None and is_serial and b.interface is not None:
+        _runtime_state["radio"]["status"] = "reconfiguring"
+        _close_bridge_radio_interface(b)
+        released_live_radio = True
+        time.sleep(0.5)
+
+    try:
+        result = _run_meshtastic_cli(extra_args, timeout=timeout)
+    finally:
+        if released_live_radio and b is not None:
+            try:
+                time.sleep(0.5)
+                _reconnect_bridge_radio_interface(b)
+            except Exception as exc:
+                reconnect_error = str(exc)
+
+    if reconnect_error:
+        result["reconnect_error"] = reconnect_error
+        _runtime_state["radio"]["status"] = "error"
+    return result
+
+
+def _radio_config_sync_view() -> dict[str, Any]:
+    state = _runtime_state.get("radio_config", {})
+    status = str(state.get("status") or "idle")
+    return {
+        "status": status,
+        "pending": status in {"requested", "syncing"},
+        "authoritative": status == "ready" and bool(state.get("form_values")),
+        "requested_at": state.get("requested_at"),
+        "updated_at": state.get("updated_at"),
+        "message": state.get("message") or "",
+        "last_error": state.get("last_error"),
+    }
+
+
+def _set_radio_config_state(**updates: Any) -> None:
+    with _radio_config_lock:
+        state = _runtime_state.setdefault("radio_config", {})
+        state.update(updates)
+
+
+def _radio_config_export_worker() -> None:
+    try:
+        _set_radio_config_state(
+            status="syncing",
+            message="Radio config export requested. Waiting for the connected radio to return its current configuration. Dashboard values may be incomplete until this finishes.",
+            last_error=None,
+        )
+        result = _run_meshtastic_cli_with_bridge_release(["--export-config"], timeout=120)
+        if not result.get("ok"):
+            error_message = result.get("stderr") or result.get("stdout") or "Radio export command failed"
+            _set_radio_config_state(
+                status="error",
+                message=f"Radio config export failed: {error_message}",
+                last_error=error_message,
+            )
+            return
+
+        import yaml
+
+        exported_text = str(result.get("stdout") or "").strip()
+        exported_payload = yaml.safe_load(exported_text) if exported_text else {}
+        if not isinstance(exported_payload, dict):
+            exported_payload = {}
+        form_values = _flatten_radio_form_values(exported_payload)
+        if not form_values:
+            _set_radio_config_state(
+                status="error",
+                message="Radio config export completed but returned no editable values yet. Try refresh again once the radio finishes reporting.",
+                last_error="empty export",
+            )
+            return
+
+        _set_radio_config_state(
+            status="ready",
+            updated_at=int(time.time()),
+            message="Live radio config export received. Fields now reflect the connected radio.",
+            last_error=None,
+            form_values=form_values,
+            yaml_text=exported_text,
+        )
+    except Exception as exc:
+        _set_radio_config_state(
+            status="error",
+            message=f"Radio config export failed: {exc}",
+            last_error=str(exc),
+        )
+    finally:
+        global _radio_config_thread
+        with _radio_config_lock:
+            _radio_config_thread = None
+
+
+def _request_radio_config_export(force: bool = False) -> None:
+    global _radio_config_thread
+
+    with _radio_config_lock:
+        state = _runtime_state.setdefault("radio_config", {})
+        status = str(state.get("status") or "idle")
+        if _radio_config_thread is not None and _radio_config_thread.is_alive():
+            return
+        if not force and status == "ready" and state.get("form_values"):
+            return
+        state["status"] = "requested"
+        state["requested_at"] = int(time.time())
+        state["message"] = "Live radio config export requested. Waiting on the connected radio. Dashboard values may be incomplete until the export returns."
+        state["last_error"] = None
+        if force:
+            state["updated_at"] = None
+            state["form_values"] = {}
+            state["yaml_text"] = ""
+        _radio_config_thread = threading.Thread(target=_radio_config_export_worker, daemon=True)
+        _radio_config_thread.start()
+
+
 def _mesh_channel_export(name: str, index: int, psk_b64: str) -> dict[str, Any]:
     payload = {"name": name, "index": index, "psk": psk_b64, "format": "meshtak-channel-v1"}
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
@@ -433,6 +626,385 @@ def _parse_mesh_channel_import(payload: dict[str, Any]) -> dict[str, Any]:
         if original.get(key) not in (None, ""):
             payload[key] = original[key]
     return payload
+
+
+def _nested_value(data: Any, *path_groups: tuple[str, ...]) -> Any:
+    for path in path_groups:
+        current = data
+        matched = True
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                matched = False
+                break
+            current = current[key]
+        if matched and current not in (None, ""):
+            return current
+    return None
+
+
+def _extract_radio_editable_fields(radio_snapshot: dict[str, Any]) -> dict[str, Any]:
+    my_info = radio_snapshot.get("myInfo") if isinstance(radio_snapshot, dict) else {}
+    local_node = radio_snapshot.get("localNode") if isinstance(radio_snapshot, dict) else {}
+    local_config = {}
+    if isinstance(local_node, dict):
+        local_config = local_node.get("localConfig") or local_node.get("local_config") or {}
+    user = _nested_value(
+        my_info,
+        ("my_node_info", "user"),
+        ("user",),
+    ) or {}
+
+    return {
+        "long_name": _nested_value(user, ("longName",), ("long_name",)),
+        "short_name": _nested_value(user, ("shortName",), ("short_name",)),
+        "region": _nested_value(
+            local_config,
+            ("lora", "region"),
+        ),
+        "tx_power": _nested_value(
+            local_config,
+            ("lora", "txPower"),
+            ("lora", "tx_power"),
+        ),
+        "modem_preset": _nested_value(
+            local_config,
+            ("lora", "modemPreset"),
+            ("lora", "modem_preset"),
+        ),
+        "position_broadcast_secs": _nested_value(
+            local_config,
+            ("position", "positionBroadcastSecs"),
+            ("position", "position_broadcast_secs"),
+        ),
+    }
+
+
+def _extract_live_radio_form_values(radio_snapshot: dict[str, Any]) -> dict[str, Any]:
+    my_info = radio_snapshot.get("myInfo") if isinstance(radio_snapshot, dict) else {}
+    local_node = radio_snapshot.get("localNode") if isinstance(radio_snapshot, dict) else {}
+    if not isinstance(local_node, dict):
+        local_node = {}
+
+    user = _nested_value(
+        my_info,
+        ("my_node_info", "user"),
+        ("user",),
+    ) or local_node.get("user") or {}
+    local_config = local_node.get("localConfig") or local_node.get("local_config") or {}
+    module_config = local_node.get("moduleConfig") or local_node.get("module_config") or {}
+
+    live_payload = {
+        "owner": _nested_value(user, ("longName",), ("long_name",)),
+        "owner_short": _nested_value(user, ("shortName",), ("short_name",)),
+        "config": {
+            "bluetooth": {
+                "enabled": _nested_value(local_config, ("bluetooth", "enabled")),
+                "fixedPin": _nested_value(local_config, ("bluetooth", "fixedPin"), ("bluetooth", "fixed_pin")),
+                "mode": _nested_value(local_config, ("bluetooth", "mode")),
+            },
+            "device": {
+                "nodeInfoBroadcastSecs": _nested_value(local_config, ("device", "nodeInfoBroadcastSecs"), ("device", "node_info_broadcast_secs")),
+                "tzdef": _nested_value(local_config, ("device", "tzdef")),
+            },
+            "display": {
+                "screenOnSecs": _nested_value(local_config, ("display", "screenOnSecs"), ("display", "screen_on_secs")),
+            },
+            "lora": {
+                "region": _nested_value(local_config, ("lora", "region")),
+                "bandwidth": _nested_value(local_config, ("lora", "bandwidth")),
+                "codingRate": _nested_value(local_config, ("lora", "codingRate"), ("lora", "coding_rate")),
+                "configOkToMqtt": _nested_value(local_config, ("lora", "configOkToMqtt"), ("lora", "config_ok_to_mqtt")),
+                "hopLimit": _nested_value(local_config, ("lora", "hopLimit"), ("lora", "hop_limit")),
+                "spreadFactor": _nested_value(local_config, ("lora", "spreadFactor"), ("lora", "spread_factor")),
+                "sx126xRxBoostedGain": _nested_value(local_config, ("lora", "sx126xRxBoostedGain"), ("lora", "sx126x_rx_boosted_gain")),
+                "txEnabled": _nested_value(local_config, ("lora", "txEnabled"), ("lora", "tx_enabled")),
+                "txPower": _nested_value(local_config, ("lora", "txPower"), ("lora", "tx_power")),
+                "usePreset": _nested_value(local_config, ("lora", "usePreset"), ("lora", "use_preset")),
+            },
+            "network": {
+                "wifiSsid": _nested_value(local_config, ("network", "wifiSsid"), ("network", "wifi_ssid")),
+            },
+            "position": {
+                "broadcastSmartMinimumDistance": _nested_value(local_config, ("position", "broadcastSmartMinimumDistance"), ("position", "broadcast_smart_minimum_distance")),
+                "broadcastSmartMinimumIntervalSecs": _nested_value(local_config, ("position", "broadcastSmartMinimumIntervalSecs"), ("position", "broadcast_smart_minimum_interval_secs")),
+                "gpsEnGpio": _nested_value(local_config, ("position", "gpsEnGpio"), ("position", "gps_en_gpio")),
+                "gpsMode": _nested_value(local_config, ("position", "gpsMode"), ("position", "gps_mode")),
+                "gpsUpdateInterval": _nested_value(local_config, ("position", "gpsUpdateInterval"), ("position", "gps_update_interval")),
+                "positionBroadcastSecs": _nested_value(local_config, ("position", "positionBroadcastSecs"), ("position", "position_broadcast_secs")),
+                "positionBroadcastSmartEnabled": _nested_value(local_config, ("position", "positionBroadcastSmartEnabled"), ("position", "position_broadcast_smart_enabled")),
+                "positionFlags": _nested_value(local_config, ("position", "positionFlags"), ("position", "position_flags")),
+            },
+            "power": {
+                "lsSecs": _nested_value(local_config, ("power", "lsSecs"), ("power", "ls_secs")),
+                "minWakeSecs": _nested_value(local_config, ("power", "minWakeSecs"), ("power", "min_wake_secs")),
+                "sdsSecs": _nested_value(local_config, ("power", "sdsSecs"), ("power", "sds_secs")),
+                "waitBluetoothSecs": _nested_value(local_config, ("power", "waitBluetoothSecs"), ("power", "wait_bluetooth_secs")),
+            },
+            "security": {
+                "privateKey": _nested_value(local_config, ("security", "privateKey"), ("security", "private_key")),
+                "publicKey": _nested_value(local_config, ("security", "publicKey"), ("security", "public_key")),
+                "serialEnabled": _nested_value(local_config, ("security", "serialEnabled"), ("security", "serial_enabled")),
+            },
+        },
+        "module_config": {
+            "ambientLighting": {
+                "red": _nested_value(module_config, ("ambientLighting", "red"), ("ambient_lighting", "red")),
+                "green": _nested_value(module_config, ("ambientLighting", "green"), ("ambient_lighting", "green")),
+                "blue": _nested_value(module_config, ("ambientLighting", "blue"), ("ambient_lighting", "blue")),
+                "current": _nested_value(module_config, ("ambientLighting", "current"), ("ambient_lighting", "current")),
+            },
+            "cannedMessage": {
+                "allowInputSource": _nested_value(module_config, ("cannedMessage", "allowInputSource"), ("canned_message", "allow_input_source")),
+                "enabled": _nested_value(module_config, ("cannedMessage", "enabled"), ("canned_message", "enabled")),
+            },
+            "detectionSensor": {
+                "detectionTriggerType": _nested_value(module_config, ("detectionSensor", "detectionTriggerType"), ("detection_sensor", "detection_trigger_type")),
+                "minimumBroadcastSecs": _nested_value(module_config, ("detectionSensor", "minimumBroadcastSecs"), ("detection_sensor", "minimum_broadcast_secs")),
+            },
+            "mqtt": {
+                "address": _nested_value(module_config, ("mqtt", "address")),
+                "username": _nested_value(module_config, ("mqtt", "username")),
+                "password": _nested_value(module_config, ("mqtt", "password")),
+                "root": _nested_value(module_config, ("mqtt", "root")),
+                "encryptionEnabled": _nested_value(module_config, ("mqtt", "encryptionEnabled"), ("mqtt", "encryption_enabled")),
+                "mapReportingEnabled": _nested_value(module_config, ("mqtt", "mapReportingEnabled"), ("mqtt", "map_reporting_enabled")),
+                "proxyToClientEnabled": _nested_value(module_config, ("mqtt", "proxyToClientEnabled"), ("mqtt", "proxy_to_client_enabled")),
+                "mapReportSettings": {
+                    "positionPrecision": _nested_value(module_config, ("mqtt", "mapReportSettings", "positionPrecision"), ("mqtt", "map_report_settings", "position_precision")),
+                    "publishIntervalSecs": _nested_value(module_config, ("mqtt", "mapReportSettings", "publishIntervalSecs"), ("mqtt", "map_report_settings", "publish_interval_secs")),
+                    "shouldReportLocation": _nested_value(module_config, ("mqtt", "mapReportSettings", "shouldReportLocation"), ("mqtt", "map_report_settings", "should_report_location")),
+                },
+            },
+            "serial": {
+                "baud": _nested_value(module_config, ("serial", "baud")),
+                "enabled": _nested_value(module_config, ("serial", "enabled")),
+            },
+            "telemetry": {
+                "deviceUpdateInterval": _nested_value(module_config, ("telemetry", "deviceUpdateInterval"), ("telemetry", "device_update_interval")),
+            },
+        },
+    }
+    return _flatten_radio_form_values(live_payload)
+
+
+def _extract_live_radio_channels(radio_snapshot: Any) -> list[dict[str, Any]]:
+    if radio_snapshot is None:
+        return []
+
+    extracted: list[dict[str, Any]] = []
+    seen_indexes: set[int] = set()
+
+    def field_value(value: Any, *names: str) -> Any:
+        for name in names:
+            if isinstance(value, dict) and name in value:
+                found = value.get(name)
+                if found not in (None, ""):
+                    return found
+            if hasattr(value, name):
+                try:
+                    found = getattr(value, name)
+                except Exception:
+                    continue
+                if found not in (None, ""):
+                    return found
+        return None
+
+    def iter_entries(value: Any) -> list[tuple[Any, Any]]:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return list(value.items())
+        if isinstance(value, list):
+            return list(enumerate(value))
+        if hasattr(value, "items"):
+            try:
+                return list(value.items())
+            except Exception:
+                return []
+        return []
+
+    def append_channel(channel: Any, fallback_index: int = 0) -> None:
+        if channel is None:
+            return
+        channel_index = field_value(channel, "index", "channelNum", "channel_num")
+        try:
+            channel_index = int(channel_index if channel_index is not None else fallback_index)
+        except Exception:
+            channel_index = fallback_index
+        if channel_index in seen_indexes:
+            return
+        role = str(field_value(channel, "role") or "").strip()
+        settings = field_value(channel, "settings", "channelSettings", "channel_settings")
+        name = field_value(settings, "name") or field_value(channel, "name")
+        if not name:
+            name = "Broadcast" if channel_index == 0 else f"Channel {channel_index}"
+        extracted.append(
+            {
+                "name": str(name),
+                "index": channel_index,
+                "pinned": channel_index == 0 or role.upper() == "PRIMARY",
+                "source": "radio",
+            }
+        )
+        seen_indexes.add(channel_index)
+
+    local_node = field_value(radio_snapshot, "localNode", "local_node")
+    local_channels = field_value(local_node, "channels")
+    for key, channel in iter_entries(local_channels):
+        try:
+            fallback_index = int(key)
+        except Exception:
+            fallback_index = len(extracted)
+        append_channel(channel, fallback_index)
+
+    raw_channels = field_value(radio_snapshot, "channels")
+    if isinstance(raw_channels, list):
+        for idx, channel in enumerate(raw_channels):
+            append_channel(channel, idx)
+    else:
+        for key, channel in iter_entries(raw_channels):
+            try:
+                fallback_index = int(key)
+            except Exception:
+                fallback_index = len(extracted)
+            append_channel(channel, fallback_index)
+
+    return extracted
+
+
+def _merge_channel_views(*channel_sets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    by_index: dict[int, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+
+    for channel_list in channel_sets:
+        if not isinstance(channel_list, list):
+            continue
+        for channel in channel_list:
+            if not isinstance(channel, dict):
+                continue
+            name = str(channel.get("name") or "").strip()
+            try:
+                index = int(channel.get("index", -1))
+            except Exception:
+                index = -1
+            existing = by_index.get(index) if index >= 0 else None
+            if existing is None and name:
+                existing = by_name.get(name)
+            if existing is None:
+                existing = {}
+                merged.append(existing)
+            existing.update({k: v for k, v in channel.items() if v not in (None, "")})
+            if index >= 0:
+                by_index[index] = existing
+            if name:
+                by_name[name] = existing
+
+    return _sorted_channels(merged)
+
+
+def _sorted_channels(channels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        channels,
+        key=lambda channel: (
+            0 if bool(channel.get("pinned")) else 1,
+            int(channel.get("index", 999)) if str(channel.get("index", "")).strip() else 999,
+            str(channel.get("name") or ""),
+        ),
+    )
+
+
+def _flatten_radio_form_values(config_payload: dict[str, Any]) -> dict[str, Any]:
+    form_values: dict[str, Any] = {}
+
+    def add(path: str, value: Any) -> None:
+        if value is not None:
+            form_values[path] = value
+
+    if not isinstance(config_payload, dict):
+        return form_values
+
+    def walk(node: Any, prefix: str = "") -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                next_prefix = f"{prefix}.{key}" if prefix else str(key)
+                walk(value, next_prefix)
+        else:
+            add(prefix, node)
+
+    walk(config_payload)
+    return form_values
+
+
+def _merge_form_values(*sources: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            if value not in (None, ""):
+                merged[key] = value
+    return merged
+
+
+def _build_radio_configure_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    direct_payload = payload.get("config_payload")
+    if isinstance(direct_payload, dict) and direct_payload:
+        return direct_payload
+
+    config_payload: dict[str, Any] = {}
+
+    long_name = str(payload.get("long_name") or payload.get("owner") or "").strip()
+    short_name = str(payload.get("short_name") or "").strip()
+    if long_name:
+        config_payload["owner"] = long_name
+    if short_name:
+        config_payload["owner_short"] = short_name[:4]
+
+    config_section: dict[str, Any] = {}
+    lora_section: dict[str, Any] = {}
+    position_section: dict[str, Any] = {}
+
+    region = payload.get("region")
+    if region not in (None, ""):
+        lora_section["region"] = str(region)
+
+    tx_power = payload.get("tx_power")
+    if tx_power not in (None, ""):
+        lora_section["tx_power"] = int(tx_power)
+
+    modem_preset = payload.get("modem_preset")
+    if modem_preset not in (None, ""):
+        lora_section["modem_preset"] = str(modem_preset)
+
+    position_broadcast_secs = payload.get("position_broadcast_secs")
+    if position_broadcast_secs not in (None, ""):
+        position_section["position_broadcast_secs"] = int(position_broadcast_secs)
+
+    if lora_section:
+        config_section["lora"] = lora_section
+    if position_section:
+        config_section["position"] = position_section
+    if config_section:
+        config_payload["config"] = config_section
+
+    return config_payload
+
+
+def _run_meshtastic_configure(config_payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    import yaml
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".yaml", delete=False) as handle:
+        yaml.safe_dump(config_payload, handle, sort_keys=False)
+        temp_path = handle.name
+
+    try:
+        return _run_meshtastic_cli_with_bridge_release(["--configure", temp_path], timeout=timeout)
+    finally:
+        try:
+            Path(temp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -806,18 +1378,54 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     def radio_channels():
         b = _bridge_required()
         cfg = b.get_config()
-        channels = cfg.get("channels", []) or []
+        channels = list(cfg.get("channels", []) or [])
+        live_channels: list[dict[str, Any]] = []
+        interface = b.interface
+        if interface is not None:
+            try:
+                live_channels = _extract_live_radio_channels(
+                    {
+                        "channels": getattr(interface, "channels", None),
+                        "localNode": getattr(interface, "localNode", None),
+                    }
+                )
+            except Exception:
+                try:
+                    live_channels = _extract_live_radio_channels(
+                        {
+                            "channels": _to_jsonable(getattr(interface, "channels", None)),
+                            "localNode": _to_jsonable(getattr(interface, "localNode", None)),
+                        }
+                    )
+                except Exception:
+                    live_channels = []
+        runtime_cfg = _read_runtime_yaml_config()
+        stored_keys = ((runtime_cfg.get("meshtastic") or {}).get("channel_keys") or {})
+        known_names = {str(channel.get("name") or "").strip() for channel in channels}
+        if isinstance(stored_keys, dict):
+            next_index = max(
+                [int(channel.get("index", 0)) for channel in channels if isinstance(channel, dict)] or [0]
+            )
+            for name in stored_keys.keys():
+                safe_name = str(name or "").strip()
+                if not safe_name or safe_name in known_names:
+                    continue
+                next_index += 1
+                channels.append({"name": safe_name, "index": next_index, "pinned": False, "stored_only": True})
+                known_names.add(safe_name)
+        channels = _merge_channel_views(live_channels, channels)
         if not channels:
             channels = [{"name": "Broadcast", "index": 0, "pinned": True}]
         return {"channels": channels}
 
     @app.get("/api/radio/config")
-    def radio_config(request: Request):
+    def radio_config(request: Request, force: bool = False):
         _require_admin(request)
         b = _bridge_required()
         conn = _radio_connection()
         cfg = b.get_config()
         runtime_cfg = _read_runtime_yaml_config()
+        template_cfg, template_text = _read_radio_template_config()
         stored_keys = ((runtime_cfg.get("meshtastic") or {}).get("channel_keys") or {})
         interface = b.interface
         radio_snapshot: dict[str, Any] = {}
@@ -827,60 +1435,58 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     radio_snapshot[attr] = _to_jsonable(getattr(interface, attr, None))
                 except Exception:
                     radio_snapshot[attr] = None
+        editable = _extract_radio_editable_fields(radio_snapshot)
+        config_sync = _radio_config_sync_view()
+        if b.is_connected() and (force or not config_sync.get("authoritative")):
+            _request_radio_config_export(force=force)
+            config_sync = _radio_config_sync_view()
+        form_values = {}
+        radio_config_state = _runtime_state.get("radio_config", {})
+        if config_sync.get("authoritative"):
+            form_values = dict(radio_config_state.get("form_values") or {})
+        merged_channels = _merge_channel_views(
+            _extract_live_radio_channels(radio_snapshot),
+            cfg.get("channels", []) or [],
+        )
 
         return {
             "connected": b.is_connected(),
             "status": _runtime_state["radio"].get("status", "unknown"),
             "connection": conn,
-            "channels": cfg.get("channels", []) or [{"name": "Broadcast", "index": 0, "pinned": True}],
+            "channels": merged_channels or [{"name": "Broadcast", "index": 0, "pinned": True}],
             "stored_channel_keys": {
                 str(name): {"name": str(name), "psk": str(psk), "masked": f"{str(psk)[:4]}...{str(psk)[-4:]}"}
                 for name, psk in stored_keys.items()
             } if isinstance(stored_keys, dict) else {},
             "radio": radio_snapshot,
+            "editable": editable,
+            "template_config": template_cfg,
+            "template_text": template_text,
+            "form_values": form_values,
+            "config_sync": config_sync,
+            "exported_yaml": radio_config_state.get("yaml_text") or "",
         }
 
     @app.post("/api/radio/config/apply")
     def radio_config_apply(request: Request, payload: dict[str, Any] = Body(...)):
         _require_admin(request)
-        commands: list[dict[str, Any]] = []
-        cli_args: list[str] = []
-
-        long_name = str(payload.get("long_name") or payload.get("owner") or "").strip()
-        short_name = str(payload.get("short_name") or "").strip()
-        if long_name:
-            cli_args.extend(["--set-owner", long_name])
-        if short_name:
-            cli_args.extend(["--set-owner-short", short_name[:4]])
-
-        set_fields = {
-            "region": "lora.region",
-            "modem_preset": "lora.modem_preset",
-            "tx_power": "lora.tx_power",
-            "position_broadcast_secs": "position.position_broadcast_secs",
-        }
-        for payload_key, cli_key in set_fields.items():
-            value = payload.get(payload_key)
-            if value not in (None, ""):
-                cli_args.extend(["--set", cli_key, str(value)])
-
-        if not cli_args:
+        config_payload = _build_radio_configure_payload(payload)
+        if not config_payload:
             raise HTTPException(status_code=400, detail="No radio configuration changes were provided")
 
         if bool(payload.get("dry_run", False)):
-            command = _meshtastic_cli_base_args() + cli_args
             return {
                 "ok": True,
                 "dry_run": True,
-                "command": " ".join(shlex.quote(part) for part in command),
+                "command": " ".join(shlex.quote(part) for part in (_meshtastic_cli_base_args() + ["--configure", "<generated-config>.yaml"])),
+                "config_payload": config_payload,
             }
 
-        result = _run_meshtastic_cli(cli_args, timeout=90)
-        commands.append(result)
+        result = _run_meshtastic_configure(config_payload, timeout=120)
         if not result["ok"]:
             raise HTTPException(status_code=500, detail=result.get("stderr") or result.get("stdout") or "Radio CLI command failed")
 
-        return {"ok": True, "commands": commands}
+        return {"ok": True, "command": result, "config_payload": config_payload}
 
     @app.post("/api/radio/config/cli")
     def radio_config_cli(request: Request, payload: dict[str, Any] = Body(...)):
@@ -905,7 +1511,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 "command": " ".join(shlex.quote(part) for part in command),
             }
 
-        result = _run_meshtastic_cli(args, timeout=120)
+        result = _run_meshtastic_cli_with_bridge_release(args, timeout=120)
         if not result["ok"]:
             raise HTTPException(status_code=500, detail=result.get("stderr") or result.get("stdout") or "Radio CLI command failed")
         return {"ok": True, "command": result}
@@ -931,7 +1537,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
         command_result = None
         if bool(payload.get("apply_to_radio", False)):
-            command_result = _run_meshtastic_cli(["--ch-index", str(index), "--ch-set", "name", name, "--ch-set", "psk", psk_b64], timeout=90)
+            command_result = _run_meshtastic_cli_with_bridge_release(["--ch-index", str(index), "--ch-set", "name", name, "--ch-set", "psk", f"base64:{psk_b64}"], timeout=90)
             if not command_result["ok"]:
                 raise HTTPException(status_code=500, detail=command_result.get("stderr") or command_result.get("stdout") or "Radio channel command failed")
 
@@ -954,7 +1560,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
         command_result = None
         if bool(payload.get("apply_to_radio", False)):
-            command_result = _run_meshtastic_cli(["--ch-index", str(index), "--ch-set", "name", name, "--ch-set", "psk", psk_b64], timeout=90)
+            command_result = _run_meshtastic_cli_with_bridge_release(["--ch-index", str(index), "--ch-set", "name", name, "--ch-set", "psk", f"base64:{psk_b64}"], timeout=90)
             if not command_result["ok"]:
                 raise HTTPException(status_code=500, detail=command_result.get("stderr") or command_result.get("stdout") or "Radio channel command failed")
 
