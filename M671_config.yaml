@@ -1,0 +1,76 @@
+owner: MAUI 5671
+owner_short: M671
+canned_messages: Ready, Moving, Holding, Need support
+channel_url: ""
+
+config:
+  bluetooth:
+    enabled: true
+    fixedPin: 123456
+    mode: RANDOM_PIN
+  device:
+    nodeInfoBroadcastSecs: 10800
+    tzdef: EST5EDT,M3.2.0,M11.1.0
+  display:
+    screenOnSecs: 30
+  lora:
+    region: US
+    bandwidth: 250
+    codingRate: 8
+    configOkToMqtt: false
+    hopLimit: 3
+    spreadFactor: 11
+    sx126xRxBoostedGain: true
+    txEnabled: true
+    txPower: 22
+    usePreset: true
+  network:
+    wifiSsid: ""
+  position:
+    broadcastSmartMinimumDistance: 100
+    broadcastSmartMinimumIntervalSecs: 30
+    gpsEnGpio: 0
+    gpsMode: NOT_PRESENT
+    gpsUpdateInterval: 120
+    positionBroadcastSecs: 300
+    positionBroadcastSmartEnabled: true
+    positionFlags: 35
+  power:
+    lsSecs: 300
+    minWakeSecs: 10
+    sdsSecs: 4294967295
+    waitBluetoothSecs: 5
+  security:
+    privateKey: ""
+    publicKey: ""
+    serialEnabled: true
+
+module_config:
+  ambientLighting:
+    red: 32
+    green: 96
+    blue: 255
+    current: 8
+  cannedMessage:
+    allowInputSource: ANY
+    enabled: true
+  detectionSensor:
+    detectionTriggerType: LOGIC_HIGH
+    minimumBroadcastSecs: 45
+  mqtt:
+    address: mqtt.meshtastic.org
+    username: meshdev
+    password: large4cats
+    root: msh
+    encryptionEnabled: false
+    mapReportingEnabled: false
+    proxyToClientEnabled: true
+    mapReportSettings:
+      positionPrecision: 16
+      publishIntervalSecs: 300
+      shouldReportLocation: false
+  serial:
+    baud: "115200"
+    enabled: true
+  telemetry:
+    deviceUpdateInterval: 300

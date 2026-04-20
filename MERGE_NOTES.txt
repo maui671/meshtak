@@ -1,0 +1,4 @@
+Merged from /home/tdcadmin/meshtak and /opt/meshtak runtime snapshots.
+Runtime source of truth was overlaid from /opt/meshtak.
+Excluded from zip: .git, venv, logs, data, certs, __pycache__, *.pyc, *.pyo.
+Preserved repo-only files from home snapshot: meshtak.py, meshtak.service, setup.sh.

@@ -1,0 +1,38 @@
+<svg width="520" height="96" viewBox="0 0 520 96" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MeshTAK spear">
+  <defs>
+    <linearGradient id="metal" x1="18" y1="48" x2="506" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#182817"/>
+      <stop offset="0.38" stop-color="#9fbf70"/>
+      <stop offset="0.68" stop-color="#f4ffd2"/>
+      <stop offset="1" stop-color="#6f9e45"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="350" y1="20" x2="506" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7ffdf"/>
+      <stop offset="0.5" stop-color="#9fc46c"/>
+      <stop offset="1" stop-color="#27351f"/>
+    </linearGradient>
+    <filter id="glow" x="-8%" y="-70%" width="116%" height="240%">
+      <feGaussianBlur stdDeviation="2.4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 48h314" stroke="#f4ffd2" stroke-width="9"/>
+    <path d="M18 48h314" stroke="url(#metal)" stroke-width="5"/>
+    <path d="M334 32h46" stroke="#0a120b" stroke-width="10"/>
+    <path d="M335 32h43" stroke="#bfe98b" stroke-width="4"/>
+
+    <path d="M376 17 506 48 376 79 398 49 376 17Z" fill="#071008" stroke="url(#edge)" stroke-width="6"/>
+    <path d="M398 49h-42" stroke="#f4ffd2" stroke-width="4"/>
+    <path d="M402 35 474 48 402 61" fill="none" stroke="#d8efab" stroke-width="2.2" opacity="0.76"/>
+
+    <path d="M64 48c16 0 19-14 29-14 15 0 13 43 30 43 16 0 16-61 33-61 19 0 18 61 38 61 16 0 20-29 36-29h60" fill="none" stroke="#bfe98b" stroke-width="7"/>
+    <path d="M64 48c16 0 19-14 29-14 15 0 13 43 30 43 16 0 16-61 33-61 19 0 18 61 38 61 16 0 20-29 36-29h60" fill="none" stroke="#f4ffd2" stroke-width="2.6"/>
+
+    <path d="M22 35h36M22 48h44M22 61h36" stroke="#9fbf70" stroke-width="4"/>
+  </g>
+</svg>

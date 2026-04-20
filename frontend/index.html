@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeshTAK Command Center</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/dashboard.css" />
+</head>
+<body class="auth-unauthenticated">
+    <section id="login-screen" class="login-screen" aria-label="MeshTAK login">
+        <div class="login-stage" aria-hidden="true">
+            <img src="/logo.png" alt="" class="login-spear">
+            <div class="login-plume"></div>
+        </div>
+        <div class="login-panel">
+            <div class="login-kicker">MeshTAK Command Access</div>
+            <h1>Launch Control</h1>
+            <p>Authenticate to bring the mesh operations board online.</p>
+            <div class="auth-status" id="auth-status">Not signed in</div>
+            <div class="auth-form" id="auth-form">
+                <input id="auth-username" class="auth-input" type="text" placeholder="Username" autocomplete="username">
+                <input id="auth-password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password">
+                <button id="auth-login" class="auth-btn" type="button">Log In</button>
+            </div>
+        </div>
+    </section>
+
+    <nav id="sidebar">
+        <div class="sb-nav">
+            <a href="#dashboard" class="sb-item active" data-view-link="dashboard">
+                <span class="sb-icon">[]</span>
+                Dashboard
+            </a>
+            <a href="#map" class="sb-item" data-view-link="map">
+                <span class="sb-icon">O</span>
+                Mesh Map
+            </a>
+            <a href="#nodes" class="sb-item" data-view-link="nodes">
+                <span class="sb-icon">N</span>
+                Nodes
+            </a>
+            <a href="#messages" class="sb-item" data-view-link="messages">
+                <span class="sb-icon">M</span>
+                Messaging
+            </a>
+            <a href="#radio-config" id="radio-config-nav" class="sb-item hidden" data-view-link="radio-config">
+                <span class="sb-icon">R</span>
+                Radio Config
+            </a>
+            <a href="#packets" class="sb-item" data-view-link="packets">
+                <span class="sb-icon">P</span>
+                Packets
+            </a>
+            <a href="#stats" class="sb-item" data-view-link="stats">
+                <span class="sb-icon">S</span>
+                System Stats
+            </a>
+
+            <div class="sb-label">System</div>
+            <button id="settings-toggle" class="sb-item sb-item--button" type="button">
+                <span class="sb-icon">*</span>
+                Settings
+            </button>
+        </div>
+
+        <div class="sb-footer">
+            <div class="auth-box">
+                <div class="auth-status" id="auth-session-status">Not signed in</div>
+                <button id="auth-logout" class="auth-btn hidden" type="button">Log Out</button>
+            </div>
+            <div class="sb-version" id="version-badge">--</div>
+            <span id="update-badge" class="sb-update hidden" title="Update available">Update Available</span>
+        </div>
+    </nav>
+
+    <main id="main">
+        <header id="hdr">
+            <div class="hdr-left">
+                <h1 class="hdr-brand">
+                    <div class="hdr-plume"></div>
+                    <img src="/logo.png" alt="" class="hdr-spear" aria-hidden="true">
+                    <span class="hdr-wordmark">MeshTAK</span>
+                </h1>
+                <span class="hdr-node" id="device-name">Command Mesh</span>
+            </div>
+            <div class="hdr-right">
+                <span class="hdr-stale" id="hdr-stale">Live</span>
+                <span class="hdr-conn" id="hdr-conn">
+                    <span id="ws-status" class="hdr-dot red"></span>
+                    <span id="ws-label">Connecting...</span>
+                </span>
+                <span class="hdr-uptime" id="stat-uptime-val">--</span>
+                <span class="hdr-clock" id="hdr-clock">--:--:--</span>
+            </div>
+        </header>
+
+        <section id="dashboard" class="status-banner app-view app-view--dashboard active" data-view="dashboard">
+            <div class="status-banner__left">
+                <div class="status-banner__label">Network Status</div>
+                <div class="status-banner__value" id="network-posture">Standby</div>
+            </div>
+        </section>
+
+        <section id="kpi-row" class="kpi-row app-view app-view--dashboard active" data-view="dashboard">
+            <article class="kpi">
+                <div class="kpi-val" id="stat-nodes-val">--</div>
+                <div class="kpi-label">Nodes Seen / Active</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-packets-val">--</div>
+                <div class="kpi-label">Packets Captured</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-relay-val">--</div>
+                <div class="kpi-label">Packets Relayed</div>
+                <div class="kpi-sub" id="stat-relay-sub"></div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-collector-val">--</div>
+                <div class="kpi-label">Collector Status</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-radio-val">--</div>
+                <div class="kpi-label">Radio Status</div>
+            </article>
+            <article class="kpi">
+                <div class="kpi-val" id="stat-tak-val">--</div>
+                <div class="kpi-label">TAK Ingestion</div>
+            </article>
+        </section>
+
+        <section class="workspace">
+            <div class="split-row">
+                <section id="map-panel" class="section split-left app-view app-view--map" data-view="map">
+                    <div class="sec-head">
+                        <div>
+                            <h2>Mesh Map</h2>
+                            <p>Heltec and passive collector nodes with live packet highlighting.</p>
+                        </div>
+                        <div class="sec-inline-status">
+                            <span id="node-count-badge" class="badge">0 nodes</span>
+                            <span id="packet-count-badge" class="badge badge--muted">0 packets</span>
+                        </div>
+                    </div>
+                    <div id="map" class="map-surface"></div>
+                </section>
+
+                <section id="nodes-panel" class="section split-right app-view app-view--nodes" data-view="nodes">
+                    <div class="sec-head">
+                        <div>
+                            <h2>Node Directory</h2>
+                            <p>Search, focus, and purge node records from the operational view.</p>
+                        </div>
+                        <div class="sec-actions">
+                            <button id="node-purge-visible" class="action-btn action-btn--warn" type="button">Purge Visible</button>
+                            <button id="node-purge-all" class="action-btn action-btn--danger" type="button">Purge All</button>
+                        </div>
+                    </div>
+                    <div class="node-tools">
+                        <input type="text" id="node-search" class="ct-search" placeholder="Search nodes..." autocomplete="off" spellcheck="false">
+                        <div id="node-feed-status" class="node-meta">0 nodes</div>
+                    </div>
+                    <div id="node-list" class="node-list"></div>
+                </section>
+            </div>
+
+            <section id="messages-panel" class="section app-view app-view--messages" data-view="messages">
+                <div class="sec-head">
+                    <div>
+                        <h2>Messaging</h2>
+                        <p>Send Heltec traffic, inspect channel activity, and watch hop paths.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span id="msg-status" class="badge badge--muted">...</span>
+                    </div>
+                </div>
+
+                <div class="message-compose">
+                    <div class="message-compose__grid">
+                        <div class="message-field">
+                            <label for="message-target">Destination</label>
+                            <select id="message-target" class="toolbar-input"></select>
+                            <div id="message-target-hint" class="message-field__hint">Leave this on broadcast to talk to a channel.</div>
+                        </div>
+                        <div class="message-field">
+                            <label for="message-channel">Channel</label>
+                            <select id="message-channel" class="toolbar-input"></select>
+                            <div id="message-channel-hint" class="message-field__hint">Choose the channel for broadcast traffic.</div>
+                        </div>
+                    </div>
+                    <textarea id="message-text" class="message-box" placeholder="Send via Heltec radio..."></textarea>
+                    <div class="message-actions">
+                        <button id="message-send" class="send-btn" type="button">Send Message</button>
+                    </div>
+                </div>
+
+                <div class="toolbar-section">
+                    <div class="toolbar-grid">
+                        <select id="message-filter-node" class="toolbar-input">
+                            <option value="">All nodes</option>
+                        </select>
+                        <select id="message-filter-channel" class="toolbar-input">
+                            <option value="">All channels</option>
+                        </select>
+                        <select id="message-filter-direction" class="toolbar-input">
+                            <option value="">All directions</option>
+                            <option value="rx">Inbound</option>
+                            <option value="tx">Outbound</option>
+                        </select>
+                        <input id="message-filter-query" class="toolbar-input" type="text" placeholder="Search messages">
+                    </div>
+                    <div class="toolbar-actions">
+                        <label class="toolbar-check">
+                            <input id="message-follow-toggle" type="checkbox" checked>
+                            <span>Follow latest</span>
+                        </label>
+                        <span id="message-follow-state" class="toolbar-state">following latest</span>
+                        <button id="message-clear-filters" class="action-btn" type="button">Clear Filters</button>
+                        <button id="message-purge-visible" class="action-btn action-btn--warn" type="button">Purge Visible</button>
+                        <button id="message-purge-all" class="action-btn action-btn--danger" type="button">Purge All</button>
+                    </div>
+                </div>
+
+                <div id="message-feed-status" class="feed-meta">0 messages</div>
+                <div id="message-feed" class="message-feed"></div>
+            </section>
+
+            <section id="packets-panel" class="section app-view app-view--packets" data-view="packets">
+                <div class="sec-head">
+                    <div>
+                        <h2>Packet Watch</h2>
+                        <p>Protocol mix, RSSI, SNR, hop budgets, and decoded payload details.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span class="badge" id="packet-count">0</span>
+                    </div>
+                </div>
+
+                <div class="toolbar-section toolbar-section--packets">
+                    <div class="toolbar-grid">
+                        <select id="packet-filter-node" class="toolbar-input">
+                            <option value="">All nodes</option>
+                        </select>
+                        <select id="packet-filter-protocol" class="toolbar-input">
+                            <option value="">All protocols</option>
+                            <option value="meshtastic">Meshtastic</option>
+                            <option value="meshcore">MeshCore</option>
+                        </select>
+                        <select id="packet-filter-type" class="toolbar-input">
+                            <option value="">All types</option>
+                            <option value="text">Text</option>
+                            <option value="position">Position</option>
+                            <option value="telemetry">Telemetry</option>
+                            <option value="nodeinfo">Node Info</option>
+                            <option value="routing">Routing</option>
+                            <option value="traceroute">Traceroute</option>
+                            <option value="neighborinfo">Neighbor Info</option>
+                            <option value="encrypted">Encrypted</option>
+                        </select>
+                        <input id="packet-filter-query" class="toolbar-input" type="text" placeholder="Search packet details">
+                    </div>
+                    <div class="toolbar-actions">
+                        <label class="toolbar-check">
+                            <input id="packet-follow-toggle" type="checkbox" checked>
+                            <span>Follow newest</span>
+                        </label>
+                        <span id="packet-follow-state" class="toolbar-state">following newest</span>
+                        <button id="packet-clear-filters" class="action-btn" type="button">Clear Filters</button>
+                        <button id="packet-purge-visible" class="action-btn action-btn--warn" type="button">Purge Visible</button>
+                        <button id="packet-purge-all" class="action-btn action-btn--danger" type="button">Purge All</button>
+                    </div>
+                </div>
+
+                <div id="packet-feed-status" class="feed-meta">0 packets</div>
+                <div id="packet-scroll" class="tbl-wrap">
+                    <table class="packet-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Protocol</th>
+                                <th>Source</th>
+                                <th>Dest</th>
+                                <th>Type</th>
+                                <th>RSSI</th>
+                                <th>SNR</th>
+                                <th>Hops</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="packet-tbody"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section id="stats-panel" class="section app-view app-view--stats" data-view="stats">
+                <div class="sec-head">
+                    <div>
+                        <h2>System Stats</h2>
+                        <p>Host health and mesh performance, separated from the command dashboard.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span class="badge badge--muted" id="stats-status">Live</span>
+                    </div>
+                </div>
+                <div class="stats-grid">
+                    <article class="stat-card">
+                        <h3>System</h3>
+                        <dl class="stat-list">
+                            <div><dt>CPU</dt><dd id="stat-cpu-val">--</dd></div>
+                            <div><dt>CPU Temp</dt><dd id="stat-temp-val">--</dd></div>
+                            <div><dt>RAM</dt><dd><span id="stat-ram-val">--</span><small id="stat-ram-sub"></small></dd></div>
+                            <div><dt>Disk</dt><dd><span id="stat-disk-val">--</span><small id="stat-disk-sub"></small></dd></div>
+                            <div><dt>Uptime</dt><dd id="stat-uptime-copy">--</dd></div>
+                        </dl>
+                    </article>
+                    <article class="stat-card">
+                        <h3>Mesh</h3>
+                        <dl class="stat-list">
+                            <div><dt>Nodes</dt><dd id="stat-nodes-copy">--</dd></div>
+                            <div><dt>Packets</dt><dd id="stat-packets-copy">--</dd></div>
+                            <div><dt>Packets/min</dt><dd id="stat-rate-val">--</dd></div>
+                            <div><dt>Average RSSI</dt><dd id="stat-rssi-val">--</dd></div>
+                            <div><dt>Relay Eval</dt><dd id="stat-relay-copy">--</dd></div>
+                        </dl>
+                    </article>
+                    <article class="stat-card">
+                        <h3>System Messages</h3>
+                        <div id="system-message-list" class="system-message-list">No system messages.</div>
+                    </article>
+                </div>
+            </section>
+
+            <section id="radio-config-panel" class="section app-view app-view--radio-config hidden" data-view="radio-config">
+                <div class="sec-head">
+                    <div>
+                        <h2>Radio Config</h2>
+                        <p>Configure the active Meshtastic radio, build private channels, and store decode keys for passive collection.</p>
+                    </div>
+                    <div class="sec-inline-status">
+                        <span id="radio-config-status" class="badge badge--muted">Not loaded</span>
+                        <span id="radio-config-connection" class="badge">--</span>
+                    </div>
+                </div>
+
+                <div class="radio-config-layout">
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Connected Radio</h3>
+                                <p>Field layout follows the MeshTAK radio profile, but values are only authoritative after a live export is returned from the connected radio.</p>
+                            </div>
+                            <div class="radio-card__actions">
+                                <button id="radio-config-refresh" class="action-btn" type="button">Refresh</button>
+                                <button id="radio-config-reconnect" class="action-btn" type="button">Reconnect</button>
+                            </div>
+                        </div>
+                        <div id="radio-config-warning" class="radio-config-warning hidden"></div>
+                        <div id="radio-config-fields" class="radio-config-fields"></div>
+                        <div class="radio-field radio-field--wide">
+                            <label for="radio-config-yaml">Generated Radio YAML</label>
+                            <textarea id="radio-config-yaml" class="radio-output" readonly placeholder="Generated radio configure payload will appear here."></textarea>
+                        </div>
+                    </article>
+
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Advanced Meshtastic CLI</h3>
+                                <p>Run any Meshtastic radio argument set through the active connection. Enter arguments only, not the word meshtastic.</p>
+                            </div>
+                            <div class="radio-card__actions">
+                                <button id="radio-cli-dry-run" class="action-btn" type="button">Preview</button>
+                                <button id="radio-cli-run" class="settings-btn settings-btn--primary" type="button">Run Args</button>
+                            </div>
+                        </div>
+                        <div class="radio-field">
+                            <label for="radio-cli-args">CLI Arguments</label>
+                            <textarea id="radio-cli-args" placeholder='Example: --set lora.region US --set lora.modem_preset LONG_FAST'></textarea>
+                        </div>
+                    </article>
+
+                    <article class="radio-card">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Private Channel Builder</h3>
+                                <p>Create a key, save it for passive decode, and optionally push it to the radio.</p>
+                            </div>
+                        </div>
+                        <div class="radio-field-grid">
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-name">Channel Name</label>
+                                <input id="private-channel-name" type="text" maxlength="32" placeholder="Team Blue">
+                            </div>
+                            <div class="radio-field">
+                                <label for="private-channel-index">Channel Index</label>
+                                <input id="private-channel-index" type="number" min="1" max="7" value="1">
+                            </div>
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-psk">PSK (base64)</label>
+                                <div class="radio-inline-control">
+                                    <input id="private-channel-psk" type="text" placeholder="Generate or paste a key">
+                                    <button id="private-channel-generate" class="action-btn" type="button">Generate</button>
+                                </div>
+                            </div>
+                        </div>
+                        <label class="toolbar-check radio-check">
+                            <input id="private-channel-apply-radio" type="checkbox">
+                            <span>Apply this channel to the connected radio now</span>
+                        </label>
+                        <button id="private-channel-create" class="settings-btn settings-btn--primary" type="button">Create / Save Channel</button>
+                    </article>
+
+                    <article class="radio-card">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Import Private Channel</h3>
+                                <p>Paste a MeshTAK channel URL or JSON export. Meshtastic URLs can be stored after entering the name and PSK.</p>
+                            </div>
+                        </div>
+                        <div class="radio-field-grid">
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-import-text">Import Text</label>
+                                <textarea id="private-channel-import-text" placeholder="meshtak://channel/... or JSON"></textarea>
+                            </div>
+                            <div class="radio-field">
+                                <label for="private-channel-import-name">Name Override</label>
+                                <input id="private-channel-import-name" type="text" maxlength="32" placeholder="Optional">
+                            </div>
+                            <div class="radio-field">
+                                <label for="private-channel-import-index">Index</label>
+                                <input id="private-channel-import-index" type="number" min="1" max="7" value="1">
+                            </div>
+                            <div class="radio-field radio-field--wide">
+                                <label for="private-channel-import-psk">PSK Override</label>
+                                <input id="private-channel-import-psk" type="text" placeholder="Optional if export includes PSK">
+                            </div>
+                        </div>
+                        <label class="toolbar-check radio-check">
+                            <input id="private-channel-import-apply-radio" type="checkbox">
+                            <span>Apply imported channel to the connected radio now</span>
+                        </label>
+                        <button id="private-channel-import" class="settings-btn settings-btn--primary" type="button">Import / Save Channel</button>
+                    </article>
+
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Stored Decode Keys</h3>
+                                <p>These keys are written into the MeshTAK runtime config so passive packets can be decrypted.</p>
+                            </div>
+                        </div>
+                        <div id="radio-channel-list" class="radio-channel-list">No private channels stored.</div>
+                    </article>
+
+                    <article class="radio-card radio-card--wide">
+                        <div class="radio-card__head">
+                            <div>
+                                <h3>Export / CLI Output</h3>
+                                <p>Use the MeshTAK URL for this Web UI, or the CLI command on another Meshtastic device.</p>
+                            </div>
+                        </div>
+                        <textarea id="radio-config-output" class="radio-output" readonly placeholder="Channel exports and radio command output will appear here."></textarea>
+                    </article>
+                </div>
+
+                <div class="radio-save-rail">
+                    <button id="radio-config-save-floating" class="settings-btn settings-btn--primary" type="button">Save Radio Config</button>
+                </div>
+            </section>
+        </section>
+    </main>
+
+    <div id="settings-backdrop" class="settings-backdrop"></div>
+    <aside id="settings-drawer" class="settings-drawer" aria-hidden="true">
+        <div class="settings-drawer__header">
+            <h2 class="settings-drawer__title">Settings</h2>
+            <button id="settings-close" class="settings-close" aria-label="Close settings">&times;</button>
+        </div>
+
+        <div class="settings-drawer__body">
+            <section class="settings-section">
+                <h3 class="settings-section__title">TAK Forwarding</h3>
+                <div class="toggle-row">
+                    <span>Enable TAK ingestion</span>
+                    <label class="switch">
+                        <input id="tak-enabled" type="checkbox">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="settings-grid">
+                    <div class="settings-field settings-field--full">
+                        <label for="tak-host">TAK Host</label>
+                        <input id="tak-host" type="text" placeholder="192.168.12.252">
+                    </div>
+                    <div class="settings-field">
+                        <label for="tak-port">TAK Port</label>
+                        <input id="tak-port" type="number" placeholder="8088">
+                    </div>
+                    <div class="settings-field">
+                        <label for="tak-protocol">Protocol</label>
+                        <select id="tak-protocol">
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button id="tak-save" class="settings-btn settings-btn--primary" type="button">Save TAK</button>
+                    <button id="tak-test" class="settings-btn" type="button">Test Connection</button>
+                </div>
+                <div id="tak-settings-status" class="settings-status"></div>
+            </section>
+
+            <section class="settings-section">
+                <h3 class="settings-section__title">Passive Collector</h3>
+                <div class="settings-grid">
+                    <div class="settings-field settings-field--full">
+                        <label for="collector-spi-device">SPI Device</label>
+                        <select id="collector-spi-device">
+                            <option value="/dev/spidev0.0">/dev/spidev0.0</option>
+                            <option value="/dev/spidev0.1">/dev/spidev0.1</option>
+                            <option value="/dev/spidev1.0">/dev/spidev1.0</option>
+                            <option value="/dev/spidev1.1">/dev/spidev1.1</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="settings-actions">
+                    <button id="collector-start" class="settings-btn settings-btn--primary" type="button">Start</button>
+                    <button id="collector-stop" class="settings-btn settings-btn--danger" type="button">Stop</button>
+                    <button id="collector-reconnect" class="settings-btn" type="button">Reconnect</button>
+                </div>
+                <div id="collector-settings-status" class="settings-status">Collector status unknown</div>
+            </section>
+
+            <section class="settings-section">
+                <h3 class="settings-section__title">Active Radio</h3>
+                <div class="settings-grid">
+                    <div class="settings-field">
+                        <label for="radio-type">Connection Type</label>
+                        <select id="radio-type">
+                            <option value="serial">Serial</option>
+                            <option value="tcp">IP</option>
+                        </select>
+                    </div>
+                    <div class="settings-field">
+                        <label for="radio-serial">Serial Device</label>
+                        <input id="radio-serial" type="text" placeholder="/dev/ttyACM0">
+                    </div>
+                    <div class="settings-field">
+                        <label for="radio-host">IP/Hostname</label>
+                        <input id="radio-host" type="text" placeholder="192.168.1.100">
+                    </div>
+                    <div class="settings-field">
+                        <label for="radio-port">TCP Port</label>
+                        <input id="radio-port" type="number" placeholder="4403">
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button id="radio-connect" class="settings-btn settings-btn--primary" type="button">Connect</button>
+                    <button id="radio-disconnect" class="settings-btn settings-btn--danger" type="button">Disconnect</button>
+                    <button id="radio-reconnect" class="settings-btn" type="button">Reconnect</button>
+                </div>
+                <div id="radio-settings-status" class="settings-status">Radio status unknown</div>
+            </section>
+
+            <section class="settings-section">
+                <h3 class="settings-section__title">System</h3>
+                <div class="settings-actions">
+                    <button id="system-refresh-settings" class="settings-btn" type="button">Reload Settings</button>
+                </div>
+                <div id="system-settings-status" class="settings-status"></div>
+            </section>
+
+            <section id="admin-accounts-section" class="settings-section hidden">
+                <h3 class="settings-section__title">User Accounts</h3>
+                <div class="settings-grid">
+                    <div class="settings-field">
+                        <label for="account-username">Username</label>
+                        <input id="account-username" type="text" placeholder="operator01" autocomplete="off">
+                    </div>
+                    <div class="settings-field">
+                        <label for="account-role">Role</label>
+                        <select id="account-role">
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="settings-field settings-field--full">
+                        <label for="account-password">Password</label>
+                        <input id="account-password" type="password" placeholder="Set a strong password" autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="settings-actions">
+                    <button id="account-create" class="settings-btn settings-btn--primary" type="button">Create Account</button>
+                    <button id="account-refresh" class="settings-btn" type="button">Refresh Accounts</button>
+                </div>
+                <div id="account-settings-status" class="settings-status">Admin login required</div>
+                <div id="account-list" class="account-list"></div>
+            </section>
+        </div>
+    </aside>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script src="js/websocket_client.js"></script>
+    <script src="js/components/node_map.js"></script>
+    <script src="js/simple_node_list.js"></script>
+    <script src="js/simple_packet_feed.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
