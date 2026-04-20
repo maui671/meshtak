@@ -547,28 +547,46 @@
                         <select id="radio-type">
                             <option value="serial">Serial</option>
                             <option value="tcp">IP</option>
+                            <option value="ble">Bluetooth</option>
                         </select>
                     </div>
-                    <div class="settings-field">
+                    <div class="settings-field" id="radio-serial-field">
                         <label for="radio-serial">Serial Device</label>
                         <input id="radio-serial" type="text" placeholder="/dev/ttyACM0">
                     </div>
-                    <div class="settings-field">
+                    <div class="settings-field" id="radio-host-field">
                         <label for="radio-host">IP/Hostname</label>
                         <input id="radio-host" type="text" placeholder="192.168.1.100">
                     </div>
-                    <div class="settings-field">
+                    <div class="settings-field" id="radio-port-field">
                         <label for="radio-port">TCP Port</label>
                         <input id="radio-port" type="number" placeholder="4403">
+                    </div>
+                    <div class="settings-field settings-field--full hidden" id="radio-ble-select-field">
+                        <label for="radio-ble-device">Bluetooth Device</label>
+                        <select id="radio-ble-device">
+                            <option value="">Scan for Bluetooth devices</option>
+                        </select>
+                    </div>
+                    <div class="settings-field hidden" id="radio-ble-address-field">
+                        <label for="radio-ble-address">Bluetooth Address</label>
+                        <input id="radio-ble-address" type="text" placeholder="AA:BB:CC:DD:EE:FF">
+                    </div>
+                    <div class="settings-field hidden" id="radio-ble-pin-field">
+                        <label for="radio-ble-pin">Bluetooth PIN / Passkey</label>
+                        <input id="radio-ble-pin" type="text" inputmode="numeric" placeholder="123456">
                     </div>
                 </div>
 
                 <div class="settings-actions">
+                    <button id="bluetooth-scan" class="settings-btn hidden" type="button">Scan Bluetooth</button>
+                    <button id="bluetooth-pair" class="settings-btn hidden" type="button">Pair / Trust</button>
                     <button id="radio-connect" class="settings-btn settings-btn--primary" type="button">Connect</button>
                     <button id="radio-disconnect" class="settings-btn settings-btn--danger" type="button">Disconnect</button>
                     <button id="radio-reconnect" class="settings-btn" type="button">Reconnect</button>
                 </div>
                 <div id="radio-settings-status" class="settings-status">Radio status unknown</div>
+                <div id="bluetooth-settings-status" class="settings-status hidden">Bluetooth status idle</div>
             </section>
 
             <section class="settings-section">

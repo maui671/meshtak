@@ -21,6 +21,8 @@ ACTIVE_CONN_TYPE=serial
 ACTIVE_SERIAL_PORT=/dev/ttyACM0
 ACTIVE_TCP_HOST=""
 ACTIVE_TCP_PORT=4403
+ACTIVE_BLE_ADDRESS=""
+ACTIVE_BLE_PIN=""
 TAK_ENABLED=false
 TAK_HOST=127.0.0.1
 TAK_PORT=8088
@@ -43,7 +45,7 @@ ask_questions(){
  read -r -p "Device name [MeshTAK]: " DEVICE_NAME; DEVICE_NAME="${DEVICE_NAME:-MeshTAK}";
  echo; if [[ "$(prompt_yes_no 'Enable passive WM1303 collector?' 'y')" == y ]]; then PASSIVE_ENABLED=true; else PASSIVE_ENABLED=false; fi
  if [[ "$PASSIVE_ENABLED" == true ]]; then read -r -p "WM1303 SPI device [/dev/spidev0.0]: " SPI_DEV; SPI_DEV="${SPI_DEV:-/dev/spidev0.0}"; fi
- echo; if [[ "$(prompt_yes_no 'Enable active Meshtastic messaging radio (Heltec)?' 'y')" == y ]]; then ACTIVE_ENABLED=true; echo; echo "--- Active Meshtastic Connection Type ---"; echo "  1) Serial"; echo "  2) IP"; while true; do read -r -p "Choose connection type [1-2] [1]: " choice; choice="${choice:-1}"; case "$choice" in 1) ACTIVE_CONN_TYPE=serial; choose_serial; break;; 2) ACTIVE_CONN_TYPE=tcp; read -r -p "Meshtastic device IP/hostname: " ACTIVE_TCP_HOST; ACTIVE_TCP_HOST="${ACTIVE_TCP_HOST:-192.168.1.100}"; read -r -p "Meshtastic TCP port [4403]: " ACTIVE_TCP_PORT; ACTIVE_TCP_PORT="${ACTIVE_TCP_PORT:-4403}"; break;; esac; done; else ACTIVE_ENABLED=false; fi
+ echo; if [[ "$(prompt_yes_no 'Enable active Meshtastic messaging radio (Heltec)?' 'y')" == y ]]; then ACTIVE_ENABLED=true; echo; echo "--- Active Meshtastic Connection Type ---"; echo "  1) Serial"; echo "  2) IP"; echo "  3) Bluetooth"; while true; do read -r -p "Choose connection type [1-3] [1]: " choice; choice="${choice:-1}"; case "$choice" in 1) ACTIVE_CONN_TYPE=serial; choose_serial; break;; 2) ACTIVE_CONN_TYPE=tcp; read -r -p "Meshtastic device IP/hostname: " ACTIVE_TCP_HOST; ACTIVE_TCP_HOST="${ACTIVE_TCP_HOST:-192.168.1.100}"; read -r -p "Meshtastic TCP port [4403]: " ACTIVE_TCP_PORT; ACTIVE_TCP_PORT="${ACTIVE_TCP_PORT:-4403}"; break;; 3) ACTIVE_CONN_TYPE=ble; read -r -p "Bluetooth device MAC/address (optional, can scan later in WebUI): " ACTIVE_BLE_ADDRESS; ACTIVE_BLE_ADDRESS="${ACTIVE_BLE_ADDRESS^^}"; read -r -p "Bluetooth PIN / passkey (optional): " ACTIVE_BLE_PIN; break;; esac; done; else ACTIVE_ENABLED=false; fi
  echo; if [[ "$(prompt_yes_no 'Enable TAK forwarding?' 'y')" == y ]]; then TAK_ENABLED=true; read -r -p "TAK host/IP [127.0.0.1]: " TAK_HOST; TAK_HOST="${TAK_HOST:-127.0.0.1}"; read -r -p "TAK port [8088]: " TAK_PORT; TAK_PORT="${TAK_PORT:-8088}"; read -r -p "TAK protocol tcp or udp [udp]: " TAK_PROTOCOL; TAK_PROTOCOL="${TAK_PROTOCOL:-udp}"; TAK_PROTOCOL="${TAK_PROTOCOL,,}"; [[ "$TAK_PROTOCOL" =~ ^(tcp|udp)$ ]] || TAK_PROTOCOL=udp; if [[ "$TAK_PROTOCOL" == tcp ]]; then if [[ "$(prompt_yes_no 'Use TLS for TAK TCP?' 'n')" == y ]]; then TAK_TLS=true; read -r -p "TAK CA cert path (optional): " TAK_CA_CERT; read -r -p "TAK client cert path (optional): " TAK_CLIENT_CERT; read -r -p "TAK client key path (optional): " TAK_CLIENT_KEY; fi; fi; fi
  echo; if [[ "$(prompt_yes_no 'Enable SPI/I2C on Raspberry Pi if raspi-config is present?' 'y')" == y ]]; then ENABLE_SPI_I2C=true; else ENABLE_SPI_I2C=false; fi
  OPEN_UFW=true
@@ -65,6 +67,9 @@ install_packages(){
     libffi-dev
     pkg-config
     i2c-tools
+    bluez
+    bluetooth
+    rfkill
     ufw
   )
   local newly_installed=()
@@ -86,6 +91,7 @@ install_packages(){
   fi
 }
 enable_pi_interfaces(){ [[ "$ENABLE_SPI_I2C" == true ]] || return 0; if command -v raspi-config >/dev/null 2>&1; then raspi-config nonint do_spi 0 || true; raspi-config nonint do_i2c 0 || true; fi; }
+enable_bluetooth(){ command -v rfkill >/dev/null 2>&1 && rfkill unblock bluetooth >/dev/null 2>&1 || true; command -v systemctl >/dev/null 2>&1 && systemctl enable --now bluetooth >/dev/null 2>&1 || true; command -v bluetoothctl >/dev/null 2>&1 && bluetoothctl power on >/dev/null 2>&1 || true; }
 install_passive_dependencies(){
   [[ "$PASSIVE_ENABLED" == true ]] || return 0
   if [[ -f /usr/local/lib/libloragw.so ]]; then
@@ -110,7 +116,7 @@ install_passive_dependencies(){
     echo "Leaving passive WM1303 enabled. The app will start in degraded mode until libloragw is installed."
   fi
 }
-ensure_groups(){ usermod -aG dialout "$RUN_USER" || true; usermod -aG spi "$RUN_USER" || true; usermod -aG i2c "$RUN_USER" || true; usermod -aG gpio "$RUN_USER" || true; }
+ensure_groups(){ usermod -aG dialout "$RUN_USER" || true; usermod -aG spi "$RUN_USER" || true; usermod -aG i2c "$RUN_USER" || true; usermod -aG gpio "$RUN_USER" || true; usermod -aG bluetooth "$RUN_USER" || true; }
 prepare_dirs(){ mkdir -p "$APP_DIR" "$CONFIG_DIR" "$CERT_DIR" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/config"; }
 copy_app(){ rsync -a --delete --exclude '.git' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'venv' --exclude '*.pyc' --exclude '*.pyo' "$SCRIPT_DIR/" "$APP_DIR/"; mkdir -p "$CERT_DIR" "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/config"; }
 create_venv(){ rm -rf "$VENV_DIR"; python3 -m venv "$VENV_DIR"; "$VENV_DIR/bin/pip" install --upgrade pip wheel setuptools; "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"; }
@@ -119,7 +125,7 @@ write_json_config(){ cat > "$JSON_CONFIG" <<EOF
 {
   "meshtastic_active": {
     "enabled": ${ACTIVE_ENABLED},
-    "connection": {"type": "${ACTIVE_CONN_TYPE}", "serial_port": "${ACTIVE_SERIAL_PORT}", "host": "${ACTIVE_TCP_HOST}", "port": ${ACTIVE_TCP_PORT}}
+    "connection": {"type": "${ACTIVE_CONN_TYPE}", "serial_port": "${ACTIVE_SERIAL_PORT}", "host": "${ACTIVE_TCP_HOST}", "port": ${ACTIVE_TCP_PORT}, "ble_address": "${ACTIVE_BLE_ADDRESS}", "ble_pin": "${ACTIVE_BLE_PIN}"}
   },
   "tak": {"enabled": ${TAK_ENABLED}, "host": "${TAK_HOST}", "port": ${TAK_PORT}, "protocol": "${TAK_PROTOCOL}", "tls": ${TAK_TLS}, "ca_cert": "${TAK_CA_CERT}", "client_cert": "${TAK_CLIENT_CERT}", "client_key": "${TAK_CLIENT_KEY}"},
   "web": {"host": "0.0.0.0", "port": ${WEB_PORT}, "tls_cert": "${CERT_FILE}", "tls_key": "${KEY_FILE}"},
@@ -232,5 +238,5 @@ EOF
 set_permissions(){ chown -R "$RUN_USER:$RUN_GROUP" "$APP_DIR" "$CONFIG_DIR"; }
 reload_and_start(){ systemctl daemon-reload; systemctl enable meshtak.service; systemctl restart meshtak.service; }
 open_firewall(){ [[ "$OPEN_UFW" == true ]] || return 0; command -v ufw >/dev/null 2>&1 && ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true; }
-main(){ require_root; ask_questions; install_packages; enable_pi_interfaces; install_passive_dependencies; ensure_groups; prepare_dirs; copy_app; create_venv; generate_web_cert; write_json_config; write_yaml_config; write_env_file; write_service; set_permissions; reload_and_start; open_firewall; echo; systemctl status meshtak; echo ; echo "https://$(hostname -I | awk '{print $1}'):${WEB_PORT}"; }
+main(){ require_root; ask_questions; install_packages; enable_pi_interfaces; enable_bluetooth; install_passive_dependencies; ensure_groups; prepare_dirs; copy_app; create_venv; generate_web_cert; write_json_config; write_yaml_config; write_env_file; write_service; set_permissions; reload_and_start; open_firewall; echo; systemctl status meshtak; echo ; echo "https://$(hostname -I | awk '{print $1}'):${WEB_PORT}"; }
 main "$@"

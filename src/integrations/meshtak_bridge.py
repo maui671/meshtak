@@ -14,6 +14,10 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Dict, Optional
 
+try:
+    from meshtastic.ble_interface import BLEInterface
+except Exception:  # pragma: no cover - platform dependent
+    BLEInterface = None
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
 from pubsub import pub
@@ -75,9 +79,16 @@ class MeshTakBridge:
     def load_config(self) -> Dict[str, Any]:
         if not os.path.exists(CONFIG_PATH):
             return {
-                "connection": {"type": "serial", "port": "/dev/ttyACM0", "host": "", "enabled": False},
+                "connection": {
+                    "type": "serial",
+                    "port": "/dev/ttyACM0",
+                    "host": "",
+                    "ble_address": "",
+                    "ble_pin": "",
+                    "enabled": False,
+                },
                 "tak": {"enabled": False, "host": "", "port": 8088, "protocol": "udp", "tls": False},
-                "web": {"host": "0.0.0.0", "port": 9443, "tls_cert": "/opt/meshtak/certs/meshtak.crt", "tls_key": "/opt/meshtak/certs/meshtak.key"},
+                "web": {"host": "0.0.0.0", "port": 443, "tls_cert": "/opt/meshtak/certs/meshtak.crt", "tls_key": "/opt/meshtak/certs/meshtak.key"},
                 "channels": [{"name": "Broadcast", "index": 0, "pinned": True}],
                 "cot": {"type": "a-f-G-U-C", "team": "Orange", "role": "RTO"},
                 "identity_policy": {"prefer_meshtastic_name_if_same_node_id": True, "allow_passive_only_tak_publish": True},
@@ -206,12 +217,32 @@ class MeshTakBridge:
             port = str(conn.get("serial_port") or conn.get("port") or "/dev/ttyACM0").strip() or "/dev/ttyACM0"
             log.info("Connecting active Meshtastic radio via serial: %s", port)
             self.interface = SerialInterface(port)
-        elif conn_type == "tcp":
+        elif conn_type in {"tcp", "ip", "wifi"}:
             host = str(conn.get("host", "")).strip()
             if not host:
                 raise RuntimeError("TCP host missing in config")
             log.info("Connecting active Meshtastic radio via TCP: %s", host)
             self.interface = TCPInterface(host)
+        elif conn_type in {"ble", "bluetooth"}:
+            if BLEInterface is None:
+                raise RuntimeError("Meshtastic BLE support is unavailable in this environment")
+
+            address = str(
+                conn.get("ble_address") or conn.get("address") or conn.get("host") or ""
+            ).strip().upper()
+
+            if not address:
+                raise RuntimeError(
+                    "Bluetooth connection selected but no BLE address was provided. "
+                    "Enter the radio MAC address in the WebUI, for example AA:BB:CC:DD:EE:FF."
+                )
+
+            log.info("Connecting active Meshtastic radio via Bluetooth: %s", address)
+
+            try:
+                self.interface = BLEInterface(address=address)
+            except TypeError:
+                self.interface = BLEInterface(address)
         else:
             raise RuntimeError(f"Invalid connection type: {conn_type}")
         pub.subscribe(self.on_receive, "meshtastic.receive")

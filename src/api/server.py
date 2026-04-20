@@ -9,6 +9,7 @@ import logging
 import os
 import secrets
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -240,6 +241,8 @@ def _build_settings_payload() -> dict[str, Any]:
             "serial_port": radio_conn.get("serial_port") or radio_conn.get("port", ""),
             "host": radio_conn.get("host", ""),
             "port": _normalize_port(radio_conn.get("port", 4403), 4403),
+            "ble_address": radio_conn.get("ble_address", ""),
+            "ble_pin_set": bool(str(radio_conn.get("ble_pin", "")).strip()),
         },
     }
 
@@ -421,6 +424,12 @@ def _meshtastic_cli_base_args() -> list[str]:
     connection_type = str(conn.get("type", "serial")).strip().lower()
     if connection_type in {"tcp", "ip", "wifi"} and conn.get("host"):
         args.extend(["--host", str(conn.get("host"))])
+    elif connection_type in {"ble", "bluetooth"}:
+        ble_address = str(conn.get("ble_address") or conn.get("address") or "").strip()
+        if ble_address:
+            args.extend(["--ble", ble_address])
+        else:
+            args.append("--ble")
     else:
         port = conn.get("serial_port") or conn.get("port") or "/dev/ttyACM0"
         args.extend(["--port", str(port)])
@@ -468,11 +477,12 @@ def _reconnect_bridge_radio_interface(b: MeshTakBridge) -> None:
 def _run_meshtastic_cli_with_bridge_release(extra_args: list[str], timeout: int = 60) -> dict[str, Any]:
     b = bridge
     conn = _radio_connection()
-    is_serial = str(conn.get("type", "serial")).strip().lower() == "serial"
+    connection_type = str(conn.get("type", "serial")).strip().lower()
+    needs_release = connection_type in {"serial", "ble", "bluetooth"}
     released_live_radio = False
     reconnect_error = None
 
-    if b is not None and is_serial and b.interface is not None:
+    if b is not None and needs_release and b.interface is not None:
         _runtime_state["radio"]["status"] = "reconfiguring"
         _close_bridge_radio_interface(b)
         released_live_radio = True
@@ -586,6 +596,172 @@ def _request_radio_config_export(force: bool = False) -> None:
             state["yaml_text"] = ""
         _radio_config_thread = threading.Thread(target=_radio_config_export_worker, daemon=True)
         _radio_config_thread.start()
+
+
+def _ensure_bluetoothctl() -> str:
+    binary = shutil.which("bluetoothctl")
+    if not binary:
+        raise HTTPException(status_code=500, detail="bluetoothctl is not installed on this system")
+    return binary
+
+
+def _run_bluetoothctl(args: list[str], timeout: int = 30) -> dict[str, Any]:
+    command = [_ensure_bluetoothctl(), *args]
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Bluetooth command timed out") from exc
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "command": " ".join(shlex.quote(part) for part in command),
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def _prepare_bluetooth_adapter() -> None:
+    if shutil.which("rfkill"):
+        try:
+            subprocess.run(["rfkill", "unblock", "bluetooth"], check=False, capture_output=True, text=True, timeout=10)
+        except Exception:
+            pass
+    if shutil.which("systemctl"):
+        try:
+            subprocess.run(["systemctl", "enable", "--now", "bluetooth"], check=False, capture_output=True, text=True, timeout=20)
+        except Exception:
+            pass
+    _run_bluetoothctl(["power", "on"], timeout=10)
+
+
+def _parse_bluetooth_devices(raw_text: str, paired_addresses: set[str] | None = None) -> list[dict[str, Any]]:
+    devices: dict[str, dict[str, Any]] = {}
+    for line in (raw_text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("Device "):
+            continue
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3:
+            continue
+        address = parts[1].strip().upper()
+        name = parts[2].strip()
+        if not address:
+            continue
+        devices[address] = {
+            "address": address,
+            "name": name or address,
+            "paired": address in (paired_addresses or set()),
+        }
+    return sorted(devices.values(), key=lambda item: ((item.get("name") or "").lower(), item["address"]))
+
+
+def _bluetooth_device_inventory() -> list[dict[str, Any]]:
+    _prepare_bluetooth_adapter()
+    paired = _run_bluetoothctl(["paired-devices"], timeout=10)
+    paired_addresses = {
+        device["address"]
+        for device in _parse_bluetooth_devices(paired.get("stdout", ""))
+    }
+    devices = _run_bluetoothctl(["devices"], timeout=10)
+    return _parse_bluetooth_devices(devices.get("stdout", ""), paired_addresses=paired_addresses)
+
+
+def _bluetooth_pair_device(address: str, pin: str | None = None) -> dict[str, Any]:
+    address = str(address or "").strip().upper()
+    if not address:
+        raise HTTPException(status_code=400, detail="Bluetooth device address is required")
+    _prepare_bluetooth_adapter()
+
+    try:
+        import pexpect
+    except Exception as exc:  # pragma: no cover - runtime package
+        raise HTTPException(status_code=500, detail="pexpect is required for Bluetooth pairing prompts") from exc
+
+    child = pexpect.spawn(_ensure_bluetoothctl(), encoding="utf-8", timeout=45)
+    transcript: list[str] = []
+
+    def _consume_prompt(timeout: int = 10) -> None:
+        child.expect([r"\[bluetooth[^\]]*\]#", pexpect.TIMEOUT, pexpect.EOF], timeout=timeout)
+        chunk = (child.before or "").strip()
+        if chunk:
+            transcript.append(chunk)
+
+    try:
+        _consume_prompt()
+        for command in ("power on", "agent KeyboardDisplay", "default-agent", "pairable on"):
+            child.sendline(command)
+            _consume_prompt()
+
+        child.sendline(f"pair {address}")
+        success = False
+        passkey_hint = ""
+        while True:
+            idx = child.expect(
+                [
+                    r"Confirm passkey.*yes/no",
+                    r"Authorize service.*yes/no",
+                    r"Enter PIN code:",
+                    r"PIN code:",
+                    r"Passkey:\s*([0-9]{3,6})",
+                    r"Pairing successful",
+                    r"Failed to pair:.*",
+                    r"\[CHG\] Device .* Paired: yes",
+                    r"\[bluetooth[^\]]*\]#",
+                    pexpect.TIMEOUT,
+                    pexpect.EOF,
+                ],
+                timeout=45,
+            )
+            chunk = (child.before or "").strip()
+            if chunk:
+                transcript.append(chunk)
+            if idx in {0, 1}:
+                child.sendline("yes")
+            elif idx in {2, 3}:
+                if not pin:
+                    raise HTTPException(status_code=400, detail="This Bluetooth device requested a PIN code")
+                child.sendline(str(pin).strip())
+            elif idx == 4:
+                groups = child.match.groups() if child.match else ()
+                if groups:
+                    passkey_hint = groups[0]
+            elif idx in {5, 7}:
+                success = True
+                break
+            elif idx == 6:
+                error_line = chunk or (child.match.group(0) if child.match else "Bluetooth pairing failed")
+                raise HTTPException(status_code=500, detail=error_line)
+            elif idx == 8:
+                if success:
+                    break
+            elif idx == 9:
+                raise HTTPException(status_code=504, detail="Bluetooth pairing timed out")
+            elif idx == 10:
+                break
+
+        child.sendline(f"trust {address}")
+        _consume_prompt()
+        child.sendline(f"connect {address}")
+        _consume_prompt()
+        child.sendline("quit")
+        try:
+            child.expect(pexpect.EOF, timeout=5)
+        except Exception:
+            pass
+
+        devices = _bluetooth_device_inventory()
+        paired_device = next((device for device in devices if device["address"] == address), None)
+        return {
+            "ok": success or bool(paired_device and paired_device.get("paired")),
+            "device": paired_device or {"address": address, "name": address, "paired": success},
+            "passkey_hint": passkey_hint,
+            "transcript": "\n".join(part for part in transcript if part).strip(),
+        }
+    finally:
+        try:
+            child.close(force=True)
+        except Exception:
+            pass
 
 
 def _mesh_channel_export(name: str, index: int, psk_b64: str) -> dict[str, Any]:
@@ -1284,10 +1460,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         active["enabled"] = bool(payload.get("enabled", True))
 
         conn_type = str(payload.get("type", "serial")).strip().lower()
-        conn["type"] = conn_type if conn_type in {"serial", "tcp"} else "serial"
+        conn["type"] = conn_type if conn_type in {"serial", "tcp", "ip", "wifi", "ble", "bluetooth"} else "serial"
         conn["serial_port"] = str(payload.get("serial_port", "")).strip()
         conn["host"] = str(payload.get("host", "")).strip()
         conn["port"] = _normalize_port(payload.get("port", 4403), 4403)
+        conn["ble_address"] = str(payload.get("ble_address", "")).strip().upper()
+        if "ble_pin" in payload:
+            conn["ble_pin"] = str(payload.get("ble_pin", "")).strip()
 
         from src.integrations.meshtak_bridge import CONFIG_PATH
         import json
@@ -1367,6 +1546,27 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "connected": b.is_connected(),
             "status": _runtime_state["radio"].get("status", "unknown"),
         }
+
+    @app.get("/api/bluetooth/devices")
+    def bluetooth_devices(request: Request):
+        _require_admin(request)
+        return {"ok": True, "devices": _bluetooth_device_inventory()}
+
+    @app.post("/api/bluetooth/scan")
+    def bluetooth_scan(request: Request):
+        _require_admin(request)
+        _prepare_bluetooth_adapter()
+        scan_result = _run_bluetoothctl(["--timeout", "12", "scan", "on"], timeout=20)
+        devices = _bluetooth_device_inventory()
+        return {"ok": scan_result.get("ok", False), "devices": devices, "scan": scan_result}
+
+    @app.post("/api/bluetooth/pair")
+    def bluetooth_pair(request: Request, payload: dict[str, Any] = Body(...)):
+        _require_admin(request)
+        return _bluetooth_pair_device(
+            payload.get("address"),
+            str(payload.get("pin", "")).strip() or None,
+        )
 
     @app.get("/api/radio/nodes")
     def radio_nodes():
