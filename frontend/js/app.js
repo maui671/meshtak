@@ -34,6 +34,7 @@ let latestSettings = {};
 let latestRadioStatus = { connected: false, status: 'unknown' };
 let latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
 let latestRadioConfigData = null;
+let latestBluetoothDevices = [];
 let radioConfigPollTimer = null;
 
 const RADIO_CONFIG_SCHEMA = [
@@ -1630,6 +1631,7 @@ function _renderAuthState() {
         _clearRadioConfigPoll();
         latestRadioConfigData = null;
     }
+    _syncRadioConnectionFields();
 }
 
 async function _loadUserAccounts() {
@@ -2033,6 +2035,9 @@ function _formatRadioConnection(connection) {
     if (['tcp', 'ip', 'wifi'].includes(type)) {
         return connection?.host ? `IP ${connection.host}` : 'IP radio';
     }
+    if (['ble', 'bluetooth'].includes(type)) {
+        return connection?.ble_address ? `Bluetooth ${connection.ble_address}` : 'Bluetooth radio';
+    }
     return connection?.serial_port || connection?.port || '/dev/ttyACM0';
 }
 
@@ -2346,6 +2351,30 @@ function _bindSettingsControls() {
         });
     }
 
+    const radioType = document.getElementById('radio-type');
+    if (radioType) {
+        radioType.addEventListener('change', async () => {
+            _syncRadioConnectionFields();
+            if (
+                latestAuth.authenticated
+                && latestAuth.role === 'admin'
+                && ['ble', 'bluetooth'].includes(String(radioType.value || '').toLowerCase())
+            ) {
+                await _loadBluetoothDevices(document.getElementById('radio-ble-address')?.value || '');
+            }
+        });
+    }
+    const bluetoothDevice = document.getElementById('radio-ble-device');
+    if (bluetoothDevice) {
+        bluetoothDevice.addEventListener('change', () => {
+            const selected = bluetoothDevice.selectedOptions?.[0];
+            const address = bluetoothDevice.value || selected?.dataset?.address || '';
+            if (address) {
+                _setValue('radio-ble-address', address);
+            }
+        });
+    }
+
     _bindSettingsPost('tak-save', '/api/settings/tak', () => ({
         enabled: document.getElementById('tak-enabled')?.checked,
         host: document.getElementById('tak-host')?.value.trim(),
@@ -2365,7 +2394,10 @@ function _bindSettingsControls() {
         serial_port: document.getElementById('radio-serial')?.value.trim(),
         host: document.getElementById('radio-host')?.value.trim(),
         port: parseInt(document.getElementById('radio-port')?.value || '0', 10),
+        ble_address: document.getElementById('radio-ble-address')?.value.trim(),
+        ble_pin: document.getElementById('radio-ble-pin')?.value.trim(),
     }), 'radio-settings-status', 'Radio connect requested');
+    _bindBluetoothControls();
 
     const reload = document.getElementById('system-refresh-settings');
     if (reload) {
@@ -2419,11 +2451,113 @@ async function _loadSettings() {
         _setValue('radio-serial', radio.serial_port || '');
         _setValue('radio-host', radio.host || '');
         _setValue('radio-port', radio.port || '');
+        _setValue('radio-ble-address', radio.ble_address || '');
+        _setValue('radio-ble-pin', '');
         _setText('radio-settings-status', radio.status || 'Radio status unknown');
         _setText('system-settings-status', 'Settings loaded');
+        _syncRadioConnectionFields();
+        if (latestAuth.authenticated && latestAuth.role === 'admin' && (radio.type || '').toLowerCase() === 'ble' && (radio.ble_address || latestBluetoothDevices.length === 0)) {
+            await _loadBluetoothDevices(radio.ble_address || '');
+        }
     } catch (error) {
         _setText('system-settings-status', 'Unable to load settings');
     }
+}
+
+function _bindBluetoothControls() {
+    const scanButton = document.getElementById('bluetooth-scan');
+    if (scanButton) {
+        scanButton.addEventListener('click', async () => {
+            await _scanBluetoothDevices();
+        });
+    }
+    const pairButton = document.getElementById('bluetooth-pair');
+    if (pairButton) {
+        pairButton.addEventListener('click', async () => {
+            const address = (document.getElementById('radio-ble-address')?.value || '').trim();
+            const pin = (document.getElementById('radio-ble-pin')?.value || '').trim();
+            if (!address) {
+                _setText('bluetooth-settings-status', 'Choose or enter a Bluetooth device address first');
+                return;
+            }
+            const result = await _postJson('/api/bluetooth/pair', { address, pin }, 'bluetooth-settings-status', 'Bluetooth pairing complete');
+            if (result?.device?.address) {
+                _setValue('radio-ble-address', result.device.address);
+                await _loadBluetoothDevices(result.device.address);
+            }
+        });
+    }
+}
+
+async function _scanBluetoothDevices() {
+    const result = await _postJson('/api/bluetooth/scan', {}, 'bluetooth-settings-status', 'Bluetooth scan complete');
+    if (result?.devices) {
+        _populateBluetoothDeviceOptions(result.devices || [], document.getElementById('radio-ble-address')?.value || '');
+    }
+}
+
+async function _loadBluetoothDevices(selectedAddress = '') {
+    try {
+        const response = await fetch('/api/bluetooth/devices');
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || 'Unable to load Bluetooth devices');
+        }
+        _populateBluetoothDeviceOptions(data.devices || [], selectedAddress);
+        _setText('bluetooth-settings-status', 'Bluetooth device list loaded');
+    } catch (error) {
+        _setText('bluetooth-settings-status', error.message || 'Unable to load Bluetooth devices');
+    }
+}
+
+function _populateBluetoothDeviceOptions(devices, selectedAddress = '') {
+    latestBluetoothDevices = Array.isArray(devices) ? devices.slice() : [];
+    const select = document.getElementById('radio-ble-device');
+    if (!select) {
+        return;
+    }
+    const normalized = String(selectedAddress || '').trim().toUpperCase();
+    select.innerHTML = '<option value="">Scan for Bluetooth devices</option>';
+    latestBluetoothDevices.forEach((device) => {
+        const option = document.createElement('option');
+        option.value = device.address || '';
+        option.dataset.address = device.address || '';
+        option.textContent = device.paired
+            ? `${device.name || device.address} (${device.address}) paired`
+            : `${device.name || device.address} (${device.address})`;
+        if (option.value === normalized) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+    if (normalized) {
+        _setValue('radio-ble-address', normalized);
+    }
+}
+
+function _syncRadioConnectionFields() {
+    const type = String(document.getElementById('radio-type')?.value || 'serial').toLowerCase();
+    const isSerial = type === 'serial';
+    const isTcp = ['tcp', 'ip', 'wifi'].includes(type);
+    const isBle = ['ble', 'bluetooth'].includes(type);
+    const canManageBluetooth = latestAuth.authenticated && latestAuth.role === 'admin';
+
+    [
+        ['radio-serial-field', isSerial],
+        ['radio-host-field', isTcp],
+        ['radio-port-field', isTcp],
+        ['radio-ble-select-field', isBle],
+        ['radio-ble-address-field', isBle],
+        ['radio-ble-pin-field', isBle],
+        ['bluetooth-scan', isBle && canManageBluetooth],
+        ['bluetooth-pair', isBle && canManageBluetooth],
+        ['bluetooth-settings-status', isBle && canManageBluetooth],
+    ].forEach(([id, visible]) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.classList.toggle('hidden', !visible);
+        }
+    });
 }
 
 async function _postJson(url, body, statusElId, okText) {

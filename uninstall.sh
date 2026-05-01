@@ -26,6 +26,9 @@ PROJECT_PACKAGES=(
   libsqlite3-dev
   pkg-config
   i2c-tools
+  bluez
+  bluetooth
+  rfkill
   ufw
 )
 

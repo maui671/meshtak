@@ -11,3 +11,4 @@ urllib3>=2.6.3
 meshcore>=2.1.0
 paho-mqtt>=2.1.0
 pypubsub>=4.0
+pexpect>=4.9.0
