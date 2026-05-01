@@ -1,0 +1,2 @@
+2026-05-01 15:13:43,185 INFO Connecting active Meshtastic radio via serial: /dev/ttyACM0
+2026-05-01 15:13:43,185 WARNING Active Meshtastic interface unavailable at startup: [Errno 2] No such file or directory: '/dev/ttyACM0'
