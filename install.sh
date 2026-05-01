@@ -143,7 +143,7 @@ install_packages(){
         git build-essential \
         libffi-dev libsqlite3-dev \
         i2c-tools bluez bluetooth rfkill \
-        ufw
+        ufw rsync
 }
 
 install_m1_hal(){
