@@ -8,6 +8,7 @@ import queue
 import re
 import socket
 import ssl
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -210,6 +211,55 @@ class MeshTakBridge:
         except Exception as exc:
             log.warning("Error closing interface: %s", exc)
 
+    @staticmethod
+    def _run_bluetoothctl(*args: str, timeout: int = 20) -> tuple[bool, str]:
+        try:
+            completed = subprocess.run(
+                ["bluetoothctl", *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            return False, str(exc)
+        output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
+        return completed.returncode == 0, output
+
+    def _stabilize_ble_device(self, address: str) -> None:
+        if not address:
+            return
+        for command in (("scan", "off"), ("trust", address), ("connect", address)):
+            ok, output = self._run_bluetoothctl(*command)
+            if output:
+                log.info("bluetoothctl %s -> %s", " ".join(command), output.replace("\n", " "))
+            if not ok and command[:2] != ("scan", "off"):
+                log.debug("bluetoothctl %s failed", " ".join(command))
+
+    def _connect_ble_interface(self, address: str) -> Any:
+        if BLEInterface is None:
+            raise RuntimeError("Meshtastic BLE support is unavailable in this environment")
+
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            self._stabilize_ble_device(address)
+            if attempt > 1:
+                time.sleep(1.5)
+            try:
+                try:
+                    return BLEInterface(address) if address else BLEInterface()
+                except TypeError:
+                    kwargs = {"address": address} if address else {}
+                    return BLEInterface(**kwargs)
+            except Exception as exc:
+                last_error = exc
+                log.warning("Bluetooth connect attempt %s failed: %s", attempt, exc)
+                try:
+                    self._run_bluetoothctl("disconnect", address)
+                except Exception:
+                    pass
+        raise RuntimeError(f"Bluetooth connection failed after retries: {last_error}") from last_error
+
     def start_interfaces(self) -> None:
         conn = self.config.get("meshtastic_active", {}).get("connection", self.config.get("connection", {}))
         conn_type = str(conn.get("type", "serial")).strip().lower()
@@ -226,23 +276,12 @@ class MeshTakBridge:
         elif conn_type in {"ble", "bluetooth"}:
             if BLEInterface is None:
                 raise RuntimeError("Meshtastic BLE support is unavailable in this environment")
-
-            address = str(
-                conn.get("ble_address") or conn.get("address") or conn.get("host") or ""
-            ).strip().upper()
-
-            if not address:
-                raise RuntimeError(
-                    "Bluetooth connection selected but no BLE address was provided. "
-                    "Enter the radio MAC address in the WebUI, for example AA:BB:CC:DD:EE:FF."
-                )
-
-            log.info("Connecting active Meshtastic radio via Bluetooth: %s", address)
-
-            try:
-                self.interface = BLEInterface(address=address)
-            except TypeError:
-                self.interface = BLEInterface(address)
+            address = str(conn.get("ble_address") or conn.get("address") or conn.get("host") or "").strip()
+            log.info(
+                "Connecting active Meshtastic radio via Bluetooth%s",
+                f": {address}" if address else " (auto-discovery)",
+            )
+            self.interface = self._connect_ble_interface(address)
         else:
             raise RuntimeError(f"Invalid connection type: {conn_type}")
         pub.subscribe(self.on_receive, "meshtastic.receive")

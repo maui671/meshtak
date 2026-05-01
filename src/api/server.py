@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -634,9 +635,13 @@ def _prepare_bluetooth_adapter() -> None:
     _run_bluetoothctl(["power", "on"], timeout=10)
 
 
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", str(text or "")).replace("\b", "").strip()
+
+
 def _parse_bluetooth_devices(raw_text: str, paired_addresses: set[str] | None = None) -> list[dict[str, Any]]:
     devices: dict[str, dict[str, Any]] = {}
-    for line in (raw_text or "").splitlines():
+    for line in _strip_ansi(raw_text).splitlines():
         line = line.strip()
         if not line.startswith("Device "):
             continue
@@ -666,11 +671,60 @@ def _bluetooth_device_inventory() -> list[dict[str, Any]]:
     return _parse_bluetooth_devices(devices.get("stdout", ""), paired_addresses=paired_addresses)
 
 
+def _bluetooth_device_info(address: str) -> dict[str, Any]:
+    details = {
+        "address": address,
+        "name": address,
+        "paired": False,
+        "trusted": False,
+        "connected": False,
+        "blocked": False,
+    }
+    result = _run_bluetoothctl(["info", address], timeout=10)
+    for line in _strip_ansi(result.get("stdout", "")).splitlines():
+        text = line.strip()
+        if text.startswith("Name:"):
+            details["name"] = text.split(":", 1)[1].strip() or address
+        elif text.startswith("Alias:") and details["name"] == address:
+            details["name"] = text.split(":", 1)[1].strip() or address
+        elif text.startswith("Paired:"):
+            details["paired"] = text.split(":", 1)[1].strip().lower() == "yes"
+        elif text.startswith("Trusted:"):
+            details["trusted"] = text.split(":", 1)[1].strip().lower() == "yes"
+        elif text.startswith("Connected:"):
+            details["connected"] = text.split(":", 1)[1].strip().lower() == "yes"
+        elif text.startswith("Blocked:"):
+            details["blocked"] = text.split(":", 1)[1].strip().lower() == "yes"
+    return details
+
+
+def _bluetooth_trust_connect(address: str) -> dict[str, Any]:
+    trust_result = _run_bluetoothctl(["trust", address], timeout=15)
+    connect_result = _run_bluetoothctl(["connect", address], timeout=20)
+    info = _bluetooth_device_info(address)
+    return {
+        "ok": bool(info.get("paired") or info.get("trusted") or info.get("connected")),
+        "device": info,
+        "trust": trust_result,
+        "connect": connect_result,
+    }
+
+
 def _bluetooth_pair_device(address: str, pin: str | None = None) -> dict[str, Any]:
     address = str(address or "").strip().upper()
     if not address:
         raise HTTPException(status_code=400, detail="Bluetooth device address is required")
     _prepare_bluetooth_adapter()
+    initial_info = _bluetooth_device_info(address)
+    if initial_info.get("paired") or initial_info.get("trusted"):
+        shortcut = _bluetooth_trust_connect(address)
+        if shortcut.get("ok"):
+            return {
+                "ok": True,
+                "device": shortcut.get("device") or initial_info,
+                "passkey_hint": "",
+                "transcript": "Device already known to bluetoothd. Refreshed trust/connect state instead of forcing a new pair.",
+            }
 
     try:
         import pexpect
@@ -688,7 +742,7 @@ def _bluetooth_pair_device(address: str, pin: str | None = None) -> dict[str, An
 
     try:
         _consume_prompt()
-        for command in ("power on", "agent KeyboardDisplay", "default-agent", "pairable on"):
+        for command in ("power on", "scan off", "agent KeyboardDisplay", "default-agent", "pairable on"):
             child.sendline(command)
             _consume_prompt()
 
@@ -703,16 +757,21 @@ def _bluetooth_pair_device(address: str, pin: str | None = None) -> dict[str, An
                     r"Enter PIN code:",
                     r"PIN code:",
                     r"Passkey:\s*([0-9]{3,6})",
+                    r"Attempting to pair with .*",
                     r"Pairing successful",
                     r"Failed to pair:.*",
                     r"\[CHG\] Device .* Paired: yes",
+                    r"\[CHG\] Device .* Connected: yes",
+                    r"Connection successful",
+                    r"Device .* already connected",
+                    r"Device .* already exists",
                     r"\[bluetooth[^\]]*\]#",
                     pexpect.TIMEOUT,
                     pexpect.EOF,
                 ],
                 timeout=45,
             )
-            chunk = (child.before or "").strip()
+            chunk = _strip_ansi(child.before or "")
             if chunk:
                 transcript.append(chunk)
             if idx in {0, 1}:
@@ -725,23 +784,27 @@ def _bluetooth_pair_device(address: str, pin: str | None = None) -> dict[str, An
                 groups = child.match.groups() if child.match else ()
                 if groups:
                     passkey_hint = groups[0]
-            elif idx in {5, 7}:
+            elif idx == 5:
+                continue
+            elif idx in {6, 8, 9, 10, 11}:
                 success = True
                 break
-            elif idx == 6:
-                error_line = chunk or (child.match.group(0) if child.match else "Bluetooth pairing failed")
+            elif idx == 7:
+                error_line = chunk or _strip_ansi(child.match.group(0) if child.match else "Bluetooth pairing failed")
                 raise HTTPException(status_code=500, detail=error_line)
-            elif idx == 8:
+            elif idx == 12:
                 if success:
                     break
-            elif idx == 9:
+            elif idx == 13:
+                device_info = _bluetooth_device_info(address)
+                if device_info.get("paired") or device_info.get("trusted") or device_info.get("connected"):
+                    success = True
+                    break
                 raise HTTPException(status_code=504, detail="Bluetooth pairing timed out")
-            elif idx == 10:
+            elif idx == 14:
                 break
 
-        child.sendline(f"trust {address}")
-        _consume_prompt()
-        child.sendline(f"connect {address}")
+        child.sendline("scan off")
         _consume_prompt()
         child.sendline("quit")
         try:
@@ -749,10 +812,12 @@ def _bluetooth_pair_device(address: str, pin: str | None = None) -> dict[str, An
         except Exception:
             pass
 
+        post_connect = _bluetooth_trust_connect(address)
+        device_info = post_connect.get("device") or _bluetooth_device_info(address)
         devices = _bluetooth_device_inventory()
-        paired_device = next((device for device in devices if device["address"] == address), None)
+        paired_device = next((device for device in devices if device["address"] == address), None) or device_info
         return {
-            "ok": success or bool(paired_device and paired_device.get("paired")),
+            "ok": success or bool(device_info.get("paired") or device_info.get("trusted") or device_info.get("connected")),
             "device": paired_device or {"address": address, "name": address, "paired": success},
             "passkey_hint": passkey_hint,
             "transcript": "\n".join(part for part in transcript if part).strip(),
