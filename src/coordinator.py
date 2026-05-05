@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
+from src.analytics.stats_reporter import StatsReporter
 from src.capture.capture_coordinator import CaptureCoordinator
 from src.config import AppConfig
 from src.decode.crypto_service import CryptoService
 from src.decode.packet_router import PacketRouter
+from src.integrations.tak_publisher import TakPublisher
 from src.log_format import CYAN, DIM, GREEN, RESET
 from src.models.packet import Packet, Protocol, RawCapture
 from src.relay.meshtastic_transmitter import MeshtasticTransmitter
@@ -48,11 +50,14 @@ class PipelineCoordinator:
         )
         self._transmitter: Optional[MeshtasticTransmitter] = None
         self._mqtt: Optional[MqttPublisher] = None
+        self._stats_reporter = StatsReporter()
+        self._tak: Optional[TakPublisher] = None
 
         self._node_repo: Optional[NodeRepository] = None
         self._packet_repo: Optional[PacketRepository] = None
         self._telemetry_repo: Optional[TelemetryRepository] = None
 
+        self._last_node_update: dict[str, Any] = {}
         self._on_packet_callbacks: list[Callable[[Packet], None]] = []
         self._running = False
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -88,6 +93,18 @@ class PipelineCoordinator:
     def relay_manager(self) -> RelayManager:
         return self._relay
 
+    @property
+    def stats_reporter(self) -> StatsReporter:
+        return self._stats_reporter
+
+    @property
+    def mqtt_publisher(self) -> Optional[MqttPublisher]:
+        return self._mqtt
+
+    @property
+    def tak_publisher(self) -> Optional[TakPublisher]:
+        return self._tak
+
     def on_packet(self, callback: Callable[[Packet], None]) -> None:
         """Register a callback invoked for each decoded packet."""
         self._on_packet_callbacks.append(callback)
@@ -97,11 +114,23 @@ class PipelineCoordinator:
         self._node_repo = NodeRepository(self._db)
         self._packet_repo = PacketRepository(self._db)
         self._telemetry_repo = TelemetryRepository(self._db)
+        self._tak = TakPublisher(
+            self._config.tak,
+            self._node_repo,
+            device_config=self._config.device,
+            transmit_config=self._config.transmit,
+        )
 
         self._setup_channel_keys()
         self._setup_relay_transmitter()
         self._setup_mqtt()
         await self._capture.start()
+        if self._tak is not None:
+            try:
+                await self._tak.publish_self_heartbeat()
+            except Exception as exc:
+                self._tak.mark_error(exc)
+                logger.exception("Initial TAK self publish failed")
 
         self._running = True
         self._pipeline_task = asyncio.create_task(
@@ -180,8 +209,11 @@ class PipelineCoordinator:
 
         packet.capture_source = raw.capture_source
         await self._store_packet(packet)
+        await self._publish_tak(packet)
+        await self._publish_tak_self()
         await self._relay.process_packet(packet)
         self._publish_mqtt(packet)
+        self._record_stats(packet)
         self._notify_callbacks(packet)
 
     @staticmethod
@@ -206,6 +238,8 @@ class PipelineCoordinator:
         node_update = decoder.extract_node_update(packet)
         if node_update:
             await self._node_repo.upsert(node_update)
+            self._last_node_update[node_update.node_id] = node_update
+            self._stats_reporter.record_node(node_update.to_dict())
         elif packet.source_id:
             await self._node_repo.increment_packet_count(packet.source_id)
 
@@ -218,6 +252,48 @@ class PipelineCoordinator:
         telemetry = decoder.extract_telemetry(packet)
         if telemetry:
             await self._telemetry_repo.insert(telemetry)
+
+    def _record_stats(self, packet: Packet) -> None:
+        """Feed the StatsReporter with packet metrics for heartbeat reporting."""
+        rssi = packet.signal.rssi if packet.signal else None
+        snr = packet.signal.snr if packet.signal else None
+        self._stats_reporter.record_packet(
+            protocol=packet.protocol.value,
+            packet_type=packet.packet_type.value,
+            rssi=rssi,
+            snr=snr,
+            hop_start=packet.hop_start,
+            hop_limit=packet.hop_limit,
+        )
+
+        if (
+            packet.signal
+            and packet.source_id
+            and self._config.device.latitude is not None
+            and self._config.device.longitude is not None
+        ):
+            node = self._last_node_update.get(packet.source_id)
+            if node and node.has_position:
+                self._stats_reporter.record_farthest_direct(
+                    source_id=packet.source_id,
+                    rssi=rssi,
+                    device_lat=self._config.device.latitude,
+                    device_lon=self._config.device.longitude,
+                    node_lat=node.latitude,
+                    node_lon=node.longitude,
+                    hop_start=packet.hop_start,
+                    hop_limit=packet.hop_limit,
+                )
+
+    async def _publish_tak(self, packet: Packet) -> None:
+        if not self._tak:
+            return
+        try:
+            await self._tak.publish_packet(packet)
+        except Exception as exc:
+            if self._tak is not None:
+                self._tak.mark_error(exc)
+            logger.exception("TAK publish error for packet %s", packet.packet_id)
 
     def _notify_callbacks(self, packet: Packet) -> None:
         for callback in self._on_packet_callbacks:
@@ -232,6 +308,12 @@ class PipelineCoordinator:
                 f" {CYAN}--{RESET} {DIM}RELAY{RESET}    disabled"
             )
             return
+
+        logger.warning(
+            "Relay TX is EXPERIMENTAL and not production-ready. "
+            "Packets may not be re-transmitted correctly. "
+            "See ROADMAP.md for status."
+        )
 
         self._transmitter = MeshtasticTransmitter(self._config.relay)
         self._transmitter.connect()
@@ -250,7 +332,24 @@ class PipelineCoordinator:
             return
         try:
             device_name = self._config.device.device_name
-            self._mqtt = MqttPublisher(self._config.mqtt, device_name)
+            self._mqtt = MqttPublisher(
+                self._config.mqtt,
+                device_name,
+                channel_keys=self._config.meshtastic.channel_keys or None,
+                default_key_b64=self._config.meshtastic.default_key_b64,
+                primary_channel_name=self._config.meshtastic.primary_channel_name,
+                device_position=(
+                    self._config.device.latitude,
+                    self._config.device.longitude,
+                    self._config.device.altitude,
+                ),
+                self_identity={
+                    "device_name": self._config.device.device_name,
+                    "long_name": self._config.transmit.long_name,
+                    "short_name": self._config.transmit.short_name,
+                    "role": self._config.tak.role,
+                },
+            )
             if self._mqtt.connect():
                 logger.info(
                     f" {CYAN}--{RESET} {GREEN}MQTT{RESET}     "
@@ -270,6 +369,15 @@ class PipelineCoordinator:
             self._mqtt.publish(packet)
         except Exception:
             logger.exception("MQTT publish error for packet %s", packet.packet_id)
+
+    async def _publish_tak_self(self) -> None:
+        if not self._tak:
+            return
+        try:
+            await self._tak.publish_self_heartbeat()
+        except Exception as exc:
+            self._tak.mark_error(exc)
+            logger.exception("TAK self publish error")
 
     def _setup_channel_keys(self) -> None:
         for name, key in self._config.meshtastic.channel_keys.items():

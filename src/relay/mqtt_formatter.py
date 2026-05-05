@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.models.packet import Packet, PacketType
+from src.relay.channel_resolver import ChannelResolver
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,15 @@ class MeshtasticMqttFormatter:
     """
 
     def __init__(self, topic_root: str, region: str, gateway_id: str,
-                 location_precision: str = "exact"):
+                 api_key: str = "",
+                 location_precision: str = "exact",
+                 channel_resolver: Optional[ChannelResolver] = None):
         self._topic_root = topic_root
         self._region = region
         self._gateway_id = gateway_id
+        self._api_key = (api_key or "").strip()
         self._location_precision = location_precision
+        self._channel_resolver = channel_resolver or ChannelResolver()
 
     def format(self, packet: Packet) -> Optional[MqttMessage]:
         try:
@@ -151,12 +156,14 @@ class MeshtasticMqttFormatter:
     def format_json(self, packet: Packet) -> Optional[MqttMessage]:
         """Build a JSON representation on the /json/ topic for HA/Node-RED."""
         channel_name = self._resolve_channel(packet)
-        topic = f"{self._topic_root}/{self._region}/2/json/{channel_name}/{self._gateway_id}"
+        topic = self._topic_with_optional_api_key(
+            f"{self._topic_root}/{self._region}/2/json/{channel_name}/{self._gateway_id}"
+        )
 
-        payload = self._build_json_payload(packet)
+        payload = self._build_json_payload(packet, channel_name)
         return MqttMessage(topic=topic, payload=json.dumps(payload).encode())
 
-    def _build_json_payload(self, packet: Packet) -> dict:
+    def _build_json_payload(self, packet: Packet, channel_name: str) -> dict:
         lat, lon = LocationRounder.apply(
             (packet.decoded_payload or {}).get("latitude"),
             (packet.decoded_payload or {}).get("longitude"),
@@ -166,16 +173,28 @@ class MeshtasticMqttFormatter:
         result = {
             "id": packet.packet_id,
             "from": packet.source_id,
+            "node_id": packet.source_id,
+            "source_id": packet.source_id,
             "to": packet.destination_id,
+            "destination_id": packet.destination_id,
             "type": packet.packet_type.value,
+            "packet_type": packet.packet_type.value,
+            "protocol": "meshtastic",
             "sender": self._gateway_id,
+            "gateway_id": self._gateway_id,
+            "channel_name": channel_name,
             "timestamp": int(packet.timestamp.timestamp()),
             "hop_limit": packet.hop_limit,
             "hop_start": packet.hop_start,
         }
+        if self._api_key:
+            result["api_key"] = self._api_key
         if packet.signal:
             result["rssi"] = packet.signal.rssi
             result["snr"] = packet.signal.snr
+        if lat is not None and lon is not None:
+            result["latitude"] = lat
+            result["longitude"] = lon
         if packet.decoded_payload:
             payload_copy = dict(packet.decoded_payload)
             if lat is not None:
@@ -185,27 +204,37 @@ class MeshtasticMqttFormatter:
                 del payload_copy["latitude"]
                 payload_copy.pop("longitude", None)
             result["payload"] = payload_copy
+            _copy_identity_fields(payload_copy, result)
         return result
 
     def _resolve_channel(self, packet: Packet) -> str:
-        if packet.channel_hash == 0 or packet.channel_hash == 8:
-            return "LongFast"
-        return f"ch{packet.channel_hash}"
+        return self._channel_resolver.resolve(
+            packet.channel_hash, packet.protocol
+        )
+
+    def _topic_with_optional_api_key(self, base_topic: str) -> str:
+        if not self._api_key:
+            return base_topic
+        return f"{base_topic}/key/{self._api_key}"
 
 
 class MeshCoreMqttFormatter:
     """Builds JSON messages for MeshCore MQTT (meshcore-mqtt compatible)."""
 
     def __init__(self, topic_root: str, region: str, gateway_id: str,
+                 api_key: str = "",
                  location_precision: str = "exact"):
         self._topic_root = topic_root
         self._region = region
         self._gateway_id = gateway_id
+        self._api_key = (api_key or "").strip()
         self._location_precision = location_precision
 
     def format(self, packet: Packet) -> Optional[MqttMessage]:
         channel_name = "MeshCore"
-        topic = f"{self._topic_root}/{self._region}/2/c/{channel_name}/{self._gateway_id}"
+        topic = self._topic_with_optional_api_key(
+            f"{self._topic_root}/{self._region}/2/c/{channel_name}/{self._gateway_id}"
+        )
 
         lat, lon = LocationRounder.apply(
             (packet.decoded_payload or {}).get("latitude"),
@@ -216,14 +245,26 @@ class MeshCoreMqttFormatter:
         payload = {
             "id": packet.packet_id,
             "from": packet.source_id,
+            "node_id": packet.source_id,
+            "source_id": packet.source_id,
             "to": packet.destination_id,
+            "destination_id": packet.destination_id,
             "type": packet.packet_type.value,
+            "packet_type": packet.packet_type.value,
+            "protocol": "meshcore",
             "sender": self._gateway_id,
+            "gateway_id": self._gateway_id,
+            "channel_name": channel_name,
             "timestamp": int(packet.timestamp.timestamp()),
         }
+        if self._api_key:
+            payload["api_key"] = self._api_key
         if packet.signal:
             payload["rssi"] = packet.signal.rssi
             payload["snr"] = packet.signal.snr
+        if lat is not None and lon is not None:
+            payload["latitude"] = lat
+            payload["longitude"] = lon
         if packet.decoded_payload:
             payload_copy = dict(packet.decoded_payload)
             if lat is not None:
@@ -233,8 +274,14 @@ class MeshCoreMqttFormatter:
                 del payload_copy["latitude"]
                 payload_copy.pop("longitude", None)
             payload["payload"] = payload_copy
+            _copy_identity_fields(payload_copy, payload)
 
         return MqttMessage(topic=topic, payload=json.dumps(payload).encode())
+
+    def _topic_with_optional_api_key(self, base_topic: str) -> str:
+        if not self._api_key:
+            return base_topic
+        return f"{base_topic}/key/{self._api_key}"
 
 
 def _encode_portnum_payload(packet: Packet) -> Optional[bytes]:
@@ -338,3 +385,10 @@ def _is_hex(value: str) -> bool:
         return True
     except (ValueError, TypeError):
         return False
+
+
+def _copy_identity_fields(source: dict, target: dict) -> None:
+    for key in ("long_name", "short_name", "role", "hw_model", "text"):
+        value = source.get(key)
+        if value not in (None, ""):
+            target[key] = value

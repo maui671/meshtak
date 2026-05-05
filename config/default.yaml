@@ -1,15 +1,20 @@
 radio:
   region: "US"
-  frequency_mhz: 906.875
+  # Frequency: set frequency_mhz (explicit MHz) OR slot (Meshtastic 1-indexed
+  # slot number). frequency_mhz wins if both are present. If neither is set,
+  # the regional default is used. Examples:
+  #   frequency_mhz: 906.875
+  #   slot: 20
   spreading_factor: 11
   bandwidth_khz: 250.0
-  coding_rate: "4/8"
+  coding_rate: "4/5"
   sync_word: 0x2B
   preamble_length: 16
   tx_power_dbm: 22
 
 meshtastic:
   default_key_b64: "AQ=="
+  primary_channel_name: "LongFast"
   # channel_keys:
   #   MyChannel: "base64encodedPSK=="
   #   SecretChat: "anotherBase64PSK=="
@@ -36,16 +41,19 @@ storage:
 
 dashboard:
   host: "0.0.0.0"
-  port: 8080
+  port: 443
   static_dir: "frontend"
+  tls_enabled: true
+  tls_cert_path: "certs/meshpoint.crt"
+  tls_key_path: "certs/meshpoint.key"
 
 device:
-  device_name: "Mesh Point"
+  device_name: "Meshpoint"
   latitude: 0.0
   longitude: 0.0
   altitude: 25
   hardware_description: "RAK2287 + Raspberry Pi 4"
-  firmware_version: "0.5.5"
+  firmware_version: "0.7.1"
 
 relay:
   enabled: false
@@ -63,17 +71,50 @@ upstream:
   buffer_max_size: 5000
   auth_token: null
 
+transmit:
+  enabled: false
+  node_id: null             # auto-generated 4-byte Meshtastic node ID
+  tx_power_dbm: 14          # conservative default (dBm)
+  # max_duty_cycle_percent omitted: auto-derives from radio.region
+  # (10% US/ANZ/KR/SG_923, 1% EU_868/IN). Override here to pin.
+  long_name: "Meshpoint"
+  short_name: "MPNT"
+  hop_limit: 3
+  nodeinfo:
+    interval_minutes: 180      # 5..1440 min, default 180 (3 hr); 0 = disabled
+    startup_delay_seconds: 60  # delay before first broadcast on boot
+
 mqtt:
   enabled: false
   broker: "mqtt.meshtastic.org"
   port: 1883
+  auth_mode: "username_password"
   username: "meshdev"
   password: "large4cats"
+  api_key: ""
+  api_key_field: "password"
+  # Topic format is "<topic_root>/<region>/2/e/<channel>/<gateway_id>".
+  # `topic_root` and `region` are concatenated with a slash, so leave
+  # `topic_root` as "msh" and use `region` for the regional segment
+  # (the Meshtastic spec). Setting topic_root to "msh/US/FL" while
+  # leaving region="US" doubles the region: msh/US/FL/US/2/e/...
+  # `mqtt.region` is independent of `radio.region`: defaults to "US".
   topic_root: "msh"
   region: "US"
-  publish_channels:
-    - "LongFast"
-    - "MeshCore"
+  # Empty list means "publish all decrypted channels seen by the gateway".
+  # Set an explicit list only if you intentionally want to restrict MQTT export.
+  publish_channels: []
   publish_json: false
   location_precision: "exact"
   homeassistant_discovery: false
+
+tak:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8088
+  protocol: "udp"
+  cot_type: "a-f-G-U-C"
+  team: "Orange"
+  role: "RTO"
+  stale_seconds: 120
+  use_meshtastic_names: true

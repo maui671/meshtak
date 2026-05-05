@@ -1,4 +1,4 @@
-"""Colored terminal logging for Mesh Point.
+"""Colored terminal logging for Meshpoint.
 
 Provides a rich log formatter with ANSI colors, an ASCII art startup
 banner, and a compact packet display with RSSI signal bars.
@@ -243,9 +243,9 @@ def _local_ip() -> str:
 
 _BANNER_ART = r"""
   {c}┌──────────────────────────────────────────────┐{r}
-  {c}│{r}  {g}╔╦╗╔═╗╔═╗╦ ╦  ╔╦╗╔═╗╦╔═{r}        {c} │{r}
-  {c}│{r}  {g}║║║║╣ ╚═╗╠═╣   ║ ╠═╣╠╩╗{r}         {c}│{r}
-  {c}│{r}  {g}╩ ╩╚═╝╚═╝╩ ╩   ╩ ╩ ╩╩ ╩{r}         {c}│{r}
+  {c}│{r}  {g}╔╦╗╔═╗╔═╗╦ ╦  ╔═╗╔═╗╦╔╗╔╔╦╗{r}              {c}│{r}
+  {c}│{r}  {g}║║║║╣ ╚═╗╠═╣  ╠═╝║ ║║║║║ ║{r}               {c}│{r}
+  {c}│{r}  {g}╩ ╩╚═╝╚═╝╩ ╩  ╩  ╚═╝╩╝╚╝ ╩{r}               {c}│{r}
   {c}└──────────────────────────────────────────────┘{r}"""
 
 
@@ -314,7 +314,8 @@ def print_banner(config: AppConfig) -> None:
         info_lines.append(("Upstream", upstream.url))
     else:
         info_lines.append(("Upstream", f"{DIM}disabled{RESET}"))
-    info_lines.append(("Dashboard", f"http://{_local_ip()}:{dashboard.port}"))
+    scheme = "https" if getattr(dashboard, "tls_enabled", False) else "http"
+    info_lines.append(("Dashboard", f"{scheme}://{_local_ip()}:{dashboard.port}"))
 
     for label, value in info_lines:
         print(f"   {DIM}{label:<12}{RESET} {value}")

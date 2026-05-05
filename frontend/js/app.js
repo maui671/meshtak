@@ -1,223 +1,124 @@
 /**
- * MeshTAK dashboard controller
- * Adds message/history QoL improvements without touching
- * existing TAK/PLI handling:
- * - discrete message/packet purge actions
- * - filter controls for message and packet history
- * - sticky-follow scroll behavior that pauses while reviewing
- * - direct-message aware channel behavior
- * - node list to map focus
- * - draggable/resizable dashboard widgets
- * - node purge/delete controls
+ * Single-page controller for the local Meshpoint dashboard.
+ * Wires up map, node list, packet feed, health surfaces, and WebSocket.
  */
-
-const MESSAGE_LIMIT = 500;
-const PACKET_LIMIT = 500;
-
-const messageState = {
-    allMessages: [],
-    filters: {
-        nodeId: '',
-        channel: '',
-        direction: '',
-        query: '',
-    },
-    followLatest: true,
-};
-
-let packetFeedInstance = null;
-let latestNodes = [];
-let latestRadioNodes = [];
-let latestChannels = [];
-let latestDevice = null;
-let latestSettings = {};
-let latestRadioStatus = { connected: false, status: 'unknown' };
-let latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
-let latestRadioConfigData = null;
-let latestBluetoothDevices = [];
-let radioConfigPollTimer = null;
-
-const RADIO_CONFIG_SCHEMA = [
-    {
-        title: 'Identity',
-        fields: [
-            { path: 'owner', label: 'Owner', type: 'text', wide: true },
-            { path: 'owner_short', label: 'Owner Short', type: 'text' },
-            { path: 'canned_messages', label: 'Canned Messages', type: 'text', wide: true },
-            { path: 'channel_url', label: 'Channel URL', type: 'textarea', wide: true },
-        ],
-    },
-    {
-        title: 'Bluetooth / Device / Display',
-        fields: [
-            { path: 'config.bluetooth.enabled', label: 'Bluetooth Enabled', type: 'boolean' },
-            { path: 'config.bluetooth.fixedPin', label: 'Bluetooth PIN', type: 'number' },
-            { path: 'config.bluetooth.mode', label: 'Bluetooth Mode', type: 'text' },
-            { path: 'config.device.nodeInfoBroadcastSecs', label: 'Node Info Broadcast Secs', type: 'number' },
-            { path: 'config.device.tzdef', label: 'TZ Definition', type: 'text', wide: true },
-            { path: 'config.display.screenOnSecs', label: 'Screen On Secs', type: 'number' },
-        ],
-    },
-    {
-        title: 'LoRa',
-        fields: [
-            { path: 'config.lora.region', label: 'Region', type: 'text' },
-            { path: 'config.lora.bandwidth', label: 'Bandwidth', type: 'number' },
-            { path: 'config.lora.codingRate', label: 'Coding Rate', type: 'number' },
-            { path: 'config.lora.hopLimit', label: 'Hop Limit', type: 'number' },
-            { path: 'config.lora.spreadFactor', label: 'Spread Factor', type: 'number' },
-            { path: 'config.lora.txPower', label: 'TX Power', type: 'number' },
-            { path: 'config.lora.usePreset', label: 'Use Preset', type: 'boolean' },
-            { path: 'config.lora.txEnabled', label: 'TX Enabled', type: 'boolean' },
-            { path: 'config.lora.sx126xRxBoostedGain', label: 'SX126x RX Boosted Gain', type: 'boolean' },
-            { path: 'config.lora.configOkToMqtt', label: 'Config OK To MQTT', type: 'boolean' },
-        ],
-    },
-    {
-        title: 'Position / Power / Network',
-        fields: [
-            { path: 'config.network.wifiSsid', label: 'WiFi SSID', type: 'text', wide: true },
-            { path: 'config.position.broadcastSmartMinimumDistance', label: 'Smart Min Distance', type: 'number' },
-            { path: 'config.position.broadcastSmartMinimumIntervalSecs', label: 'Smart Min Interval', type: 'number' },
-            { path: 'config.position.gpsEnGpio', label: 'GPS EN GPIO', type: 'number' },
-            { path: 'config.position.gpsMode', label: 'GPS Mode', type: 'text' },
-            { path: 'config.position.gpsUpdateInterval', label: 'GPS Update Interval', type: 'number' },
-            { path: 'config.position.positionBroadcastSecs', label: 'Position Broadcast Secs', type: 'number' },
-            { path: 'config.position.positionBroadcastSmartEnabled', label: 'Smart Position Broadcast', type: 'boolean' },
-            { path: 'config.position.positionFlags', label: 'Position Flags', type: 'number' },
-            { path: 'config.power.lsSecs', label: 'LS Secs', type: 'number' },
-            { path: 'config.power.minWakeSecs', label: 'Min Wake Secs', type: 'number' },
-            { path: 'config.power.sdsSecs', label: 'SDS Secs', type: 'number' },
-            { path: 'config.power.waitBluetoothSecs', label: 'Wait Bluetooth Secs', type: 'number' },
-        ],
-    },
-    {
-        title: 'Security / Ambient / Modules',
-        fields: [
-            { path: 'config.security.privateKey', label: 'Private Key', type: 'text', wide: true },
-            { path: 'config.security.publicKey', label: 'Public Key', type: 'text', wide: true },
-            { path: 'config.security.serialEnabled', label: 'Serial Enabled', type: 'boolean' },
-            { path: 'module_config.ambientLighting.red', label: 'Ambient Red', type: 'number' },
-            { path: 'module_config.ambientLighting.green', label: 'Ambient Green', type: 'number' },
-            { path: 'module_config.ambientLighting.blue', label: 'Ambient Blue', type: 'number' },
-            { path: 'module_config.ambientLighting.current', label: 'Ambient Current', type: 'number' },
-            { path: 'module_config.cannedMessage.allowInputSource', label: 'Canned Message Input Source', type: 'text', wide: true },
-            { path: 'module_config.cannedMessage.enabled', label: 'Canned Message Enabled', type: 'boolean' },
-            { path: 'module_config.detectionSensor.detectionTriggerType', label: 'Detection Trigger Type', type: 'text' },
-            { path: 'module_config.detectionSensor.minimumBroadcastSecs', label: 'Detection Min Broadcast Secs', type: 'number' },
-            { path: 'module_config.serial.baud', label: 'Serial Baud', type: 'text' },
-            { path: 'module_config.serial.enabled', label: 'Serial Module Enabled', type: 'boolean' },
-            { path: 'module_config.telemetry.deviceUpdateInterval', label: 'Telemetry Update Interval', type: 'number' },
-        ],
-    },
-    {
-        title: 'MQTT',
-        fields: [
-            { path: 'module_config.mqtt.address', label: 'MQTT Address', type: 'text', wide: true },
-            { path: 'module_config.mqtt.username', label: 'MQTT Username', type: 'text' },
-            { path: 'module_config.mqtt.password', label: 'MQTT Password', type: 'text' },
-            { path: 'module_config.mqtt.root', label: 'MQTT Root', type: 'text', wide: true },
-            { path: 'module_config.mqtt.encryptionEnabled', label: 'MQTT Encryption', type: 'boolean' },
-            { path: 'module_config.mqtt.mapReportingEnabled', label: 'Map Reporting Enabled', type: 'boolean' },
-            { path: 'module_config.mqtt.proxyToClientEnabled', label: 'Proxy To Client Enabled', type: 'boolean' },
-            { path: 'module_config.mqtt.mapReportSettings.positionPrecision', label: 'Map Position Precision', type: 'number' },
-            { path: 'module_config.mqtt.mapReportSettings.publishIntervalSecs', label: 'Map Publish Interval', type: 'number' },
-            { path: 'module_config.mqtt.mapReportSettings.shouldReportLocation', label: 'Should Report Location', type: 'boolean' },
-        ],
-    },
-];
-
 document.addEventListener('DOMContentLoaded', async () => {
-    const nodeMap = new NodeMap('map');
-    const nodeList = new SimpleNodeList('node-list');
-    const packetFeed = new SimplePacketFeed('packet-tbody', {
-        scrollContainerId: 'packet-scroll',
-        countId: 'packet-count',
-        statusId: 'packet-feed-status',
-        maxRows: PACKET_LIMIT,
-        nodeLabelResolver: _packetNodeLabel,
-        nodeMatcher: _packetNodeMatches,
+    const nodeMap = new NodeMap('map-page');
+    const packetFeed = new SimplePacketFeed('packet-tbody');
+    window.nodeMapPage = nodeMap;
+
+    const nodeDrawer = new NodeDrawer('node-drawer', {
+        onSendMessage: (node) => _openMessagingForNode(node),
+        onViewOnMap: (node) => {
+            if (node.latitude && node.longitude) {
+                const mapTab = document.querySelector('[data-tab="mapview"]');
+                if (mapTab) mapTab.click();
+                setTimeout(() => nodeMap.centerOn(node.latitude, node.longitude), 80);
+            }
+        },
     });
 
-    packetFeedInstance = packetFeed;
+    const nodeCards = new NodeCards('node-list', (node) => nodeDrawer.open(node));
 
-    _bindMessageControls();
-    _bindPacketControls();
-    _bindNodeControls(nodeMap, nodeList);
-    _bindDashboardWorkspace(nodeMap);
-    _bindCommandShell(nodeMap);
-    _bindSettingsControls();
-    _bindRadioConfigControls();
-    _bindAuthControls();
-    _bindUserAccountControls();
-    _startCommandClock();
+    const backdrop = document.getElementById('node-backdrop');
+    if (backdrop) {
+        backdrop.addEventListener('click', () => {
+            nodeDrawer.close();
+            backdrop.classList.remove('nd-backdrop--visible');
+        });
+    }
 
-    await _refreshAuthStatus();
-    await _loadInitial(nodeMap, nodeList, packetFeed);
+    const origOpen = nodeDrawer.open.bind(nodeDrawer);
+    nodeDrawer.open = async (node) => {
+        if (backdrop) backdrop.classList.add('nd-backdrop--visible');
+        await origOpen(node);
+    };
+    const origClose = nodeDrawer.close.bind(nodeDrawer);
+    nodeDrawer.close = () => {
+        if (backdrop) backdrop.classList.remove('nd-backdrop--visible');
+        origClose();
+    };
+
+    await _loadInitial(nodeMap, nodeCards, packetFeed);
     await _updateStats();
-    await _refreshRadioUi();
     _checkForUpdate();
 
     window.concentratorWS.on('packet', (packet) => {
         packetFeed.addPacket(packet);
         nodeMap.updateFromPacket(packet);
-        nodeList.updateFromPacket(packet);
+        nodeCards.updateFromPacket(packet);
         _incrementPacketCount();
-        _refreshCommandBanner();
     });
 
+    _setupTabs();
     window.concentratorWS.connect();
 
-    const sendBtn = document.getElementById('message-send');
-    if (sendBtn) {
-        sendBtn.addEventListener('click', _sendMessage);
-    }
-
     setInterval(() => {
-        _refreshData(nodeMap, nodeList);
+        _refreshData(nodeMap, nodeCards);
         _updateStats();
     }, 15_000);
-
-    setInterval(async () => {
-        await _refreshRadioUi();
-    }, 5_000);
 
     setInterval(_checkForUpdate, 300_000);
 });
 
+function _openMessagingForNode(node) {
+    const msgTab = document.querySelector('[data-tab="messages"]');
+    if (msgTab) msgTab.click();
+
+    setTimeout(() => {
+        if (window.messagingPanel) {
+            window.messagingPanel.openConversation({
+                node_id: node.node_id,
+                node_name: node.display_name || node.long_name || node.node_id,
+                protocol: node.protocol || 'meshtastic',
+                is_broadcast: false,
+            });
+        }
+    }, 100);
+}
+
 async function _loadInitial(nodeMap, nodeList, packetFeed) {
     try {
-        const [deviceRes, nodesRes, radioNodesRes, packetsRes] = await Promise.all([
+        const [deviceRes, nodesRes, packetsRes, configRes] = await Promise.all([
             fetch('/api/device'),
-            fetch('/api/nodes'),
-            fetch('/api/radio/nodes'),
-            fetch(`/api/packets?limit=${PACKET_LIMIT}`),
+            fetch('/api/nodes?enrich=true'),
+            fetch('/api/packets?limit=50'),
+            fetch('/api/config'),
         ]);
-
         const device = await deviceRes.json();
-        latestDevice = device;
         const nodesData = await nodesRes.json();
-        const radioNodesData = await radioNodesRes.json();
         const packetsData = await packetsRes.json();
+        const config = await configRes.json();
 
-        _setText('device-name', device.device_name || 'MeshTAK');
+        _setText('device-name', device.device_name || 'Meshpoint');
+        if (device.device_id) {
+            const short = device.device_id.slice(0, 8);
+            const idEl = document.getElementById('device-id');
+            if (idEl) {
+                idEl.textContent = short;
+                idEl.title = device.device_id;
+                idEl.addEventListener('click', () => {
+                    navigator.clipboard.writeText(device.device_id).then(() => {
+                        idEl.textContent = 'copied!';
+                        setTimeout(() => { idEl.textContent = short; }, 1500);
+                    });
+                });
+            }
+        }
 
-        const nodes = Array.isArray(nodesData) ? nodesData : (nodesData.nodes || []);
-        const radioNodes = radioNodesData.nodes || [];
-        latestNodes = nodes.slice();
-        latestRadioNodes = radioNodes.slice();
-        const mergedNodes = _mergeNodeCollections(nodes, radioNodes);
-        nodeMap.loadNodes(mergedNodes, device);
-        nodeList.loadNodes(mergedNodes);
-        _refreshNodeFilterOptions();
+        const nodes = nodesData.nodes || nodesData || [];
+        nodeMap.loadNodes(nodes, device);
+        nodeList.loadNodes(nodes);
 
-        const packets = (packetsData.packets || packetsData || [])
-            .slice()
-            .sort((a, b) => _packetTimestamp(b) - _packetTimestamp(a));
-
-        packetFeed.setPackets(packets);
-        _totalPackets = packets.length;
-        _refreshCommandBanner();
+        const packets = packetsData.packets || packetsData || [];
+        const sorted = packets.sort((a, b) => {
+            const aTime = a.rx_time || new Date(a.timestamp || 0).getTime() / 1000;
+            const bTime = b.rx_time || new Date(b.timestamp || 0).getTime() / 1000;
+            return aTime - bTime;
+        });
+        sorted.forEach((pkt) => packetFeed.addPacket(pkt));
+        _totalPackets = sorted.length;
+        _renderOverview(device, config);
     } catch (e) {
         console.error('Initial load failed:', e);
     }
@@ -225,22 +126,15 @@ async function _loadInitial(nodeMap, nodeList, packetFeed) {
 
 async function _refreshData(nodeMap, nodeList) {
     try {
-        const [nodesRes, radioNodesRes] = await Promise.all([
-            fetch('/api/nodes'),
-            fetch('/api/radio/nodes'),
+        const [nodesRes, deviceRes] = await Promise.all([
+            fetch('/api/nodes?enrich=true'),
+            fetch('/api/device'),
         ]);
         const data = await nodesRes.json();
-        const radioData = await radioNodesRes.json();
+        const device = await deviceRes.json();
         const nodes = data.nodes || data || [];
-        const radioNodes = radioData.nodes || [];
-        latestNodes = nodes.slice();
-        latestRadioNodes = radioNodes.slice();
-        const mergedNodes = _mergeNodeCollections(nodes, radioNodes);
-        nodeMap.loadNodes(mergedNodes, latestDevice);
-        nodeList.loadNodes(mergedNodes);
-        _refreshNodeFilterOptions();
-        packetFeedInstance?.refreshLabels?.();
-        _refreshCommandBanner();
+        nodeMap.loadNodes(nodes, device);
+        nodeList.loadNodes(nodes);
     } catch (e) {
         console.error('Refresh failed:', e);
     }
@@ -248,29 +142,23 @@ async function _refreshData(nodeMap, nodeList) {
 
 async function _updateStats() {
     try {
-        const [trafficRes, signalRes, nodeRes, deviceRes, metricsRes, settingsRes] = await Promise.all([
+        const [trafficRes, signalRes, nodeRes, deviceRes, metricsRes] = await Promise.all([
             fetch('/api/analytics/traffic'),
             fetch('/api/analytics/signal/summary'),
             fetch('/api/nodes/count'),
             fetch('/api/device/status'),
             fetch('/api/device/metrics'),
-            fetch('/api/settings'),
         ]);
 
         const traffic = await trafficRes.json();
         const signal = await signalRes.json();
         const nodeCount = await nodeRes.json();
         const device = await deviceRes.json();
-        if (settingsRes.ok) {
-            latestSettings = await settingsRes.json();
-        }
 
         _setText('stat-nodes-val', `${nodeCount.active} / ${nodeCount.count}`);
         _setText('stat-packets-val', traffic.total_packets);
         _setText('stat-rate-val', traffic.packets_per_minute);
         _setText('stat-rssi-val', signal.avg_rssi != null ? `${signal.avg_rssi} dBm` : '--');
-        _setText('stat-nodes-copy', `${nodeCount.active} active / ${nodeCount.count} total`);
-        _setText('stat-packets-copy', `${traffic.total_packets} captured`);
 
         const relay = device.relay || {};
         _setText('stat-relay-val', relay.relayed ?? 0);
@@ -278,1175 +166,132 @@ async function _updateStats() {
         _setText('stat-relay-sub', evaluated > 0
             ? `${evaluated} evaluated`
             : relay.enabled ? 'listening...' : 'relay off');
-        _setText('stat-relay-copy', evaluated > 0
-            ? `${relay.relayed ?? 0} relayed / ${relay.rejected ?? 0} rejected`
-            : relay.enabled ? 'listening' : 'off');
 
-        const uptime = _formatUptime(device.uptime_seconds || 0);
-        _setText('stat-uptime-val', uptime);
-        _setText('stat-uptime-copy', uptime);
-
+        _setText('stat-uptime-val', _formatUptime(device.uptime_seconds || 0));
         _setText('node-count-badge', `${nodeCount.active} / ${nodeCount.count} nodes`);
         _setText('packet-count-badge', `${traffic.total_packets} packets`);
         _setText('version-badge', device.firmware_version ? `v${device.firmware_version}` : '--');
-        _setText('stat-collector-val', _moduleLabel(latestSettings.collector?.status, latestSettings.collector?.enabled));
-        _setText('stat-tak-val', latestSettings.tak?.enabled ? 'Enabled' : 'Disabled');
+
+        _renderServiceHealth(device);
+        _renderHealthPage(device);
 
         if (metricsRes.ok) {
             const metrics = await metricsRes.json();
-            _setText('stat-cpu-val', `${metrics.cpu_percent}%`);
-            _setText('stat-ram-val', `${metrics.memory_percent}%`);
-            _setText('stat-ram-sub', `${metrics.memory_used_mb} / ${metrics.memory_total_mb} MB`);
-            _setText('stat-disk-val', `${metrics.disk_percent}%`);
-            _setText('stat-disk-sub', `${metrics.disk_used_gb} / ${metrics.disk_total_gb} GB`);
-            _setText('stat-temp-val', metrics.cpu_temp_c != null ? `${metrics.cpu_temp_c}C` : 'N/A');
+            _renderHealthMetrics(metrics, device);
         }
-        _renderSystemMessages();
-        _refreshCommandBanner();
     } catch (e) {
         console.error('Failed to update stats:', e);
     }
 }
 
-async function _refreshRadioUi() {
-    await Promise.allSettled([
-        _refreshRadioStatus(),
-        _refreshRadioNodes(),
-        _refreshChannels(),
-        _refreshMessages(),
-    ]);
-    packetFeedInstance?.refreshLabels?.();
+function _renderOverview(device, config) {
+    const radio = config.radio || {};
+    const capture = (config.capture && config.capture.sources) || [];
+    _setText('hero-region-chip', `Region ${radio.region || '--'}`);
+    _setText(
+        'hero-frequency-chip',
+        `Freq ${radio.frequency_mhz ? `${radio.frequency_mhz} MHz` : '--'}`
+    );
+    _setText(
+        'hero-source-chip',
+        `Source ${capture.length ? capture.join(' + ') : '--'}`
+    );
 }
 
-async function _refreshRadioStatus() {
-    try {
-        const res = await fetch('/api/radio/status');
-        const data = await res.json();
-        latestRadioStatus = data || { connected: false, status: 'unknown' };
-        const status = data.status || (data.connected ? 'connected' : 'disconnected');
+function _renderServiceHealth(status) {
+    const mqtt = status.mqtt || {};
+    const tak = status.tak || {};
+    const upstream = status.upstream || {};
 
-        _setText('msg-status', status);
-        _setText('stat-radio-val', _moduleLabel(status, true));
+    _applyServiceState(
+        'mqtt',
+        mqtt.enabled ? (mqtt.connected ? 'online' : 'error') : 'idle',
+        mqtt.enabled ? `${mqtt.broker || '--'}:${mqtt.port || '--'}` : 'disabled',
+        mqtt.enabled
+            ? (mqtt.connected ? `${mqtt.auth_mode || 'mqtt'} uplink active` : (mqtt.last_error || 'not connected'))
+            : 'local MQTT disabled'
+    );
 
-        const settingsStatus = document.getElementById('radio-settings-status');
-        if (settingsStatus) {
-            settingsStatus.textContent = status;
-        }
+    _applyServiceState(
+        'tak',
+        tak.enabled ? (tak.connected ? 'online' : 'error') : 'idle',
+        tak.enabled ? (tak.target || '--') : 'disabled',
+        tak.enabled
+            ? `${tak.publish_count || 0} sends${tak.last_error ? ` • ${tak.last_error}` : ''}`
+            : 'TAK injection disabled'
+    );
 
-        const sendBtn = document.getElementById('message-send');
-        const msgBox = document.getElementById('message-text');
-        const target = document.getElementById('message-target');
-        const channel = document.getElementById('message-channel');
-
-        const enabled = !!data.connected;
-        if (sendBtn) sendBtn.disabled = !enabled;
-        if (msgBox) msgBox.disabled = !enabled;
-        if (target) target.disabled = !enabled;
-        if (channel) channel.disabled = !enabled || _isDirectMessageSelected();
-        _refreshCommandBanner();
-    } catch (e) {
-        console.error('Radio status refresh failed:', e);
-        latestRadioStatus = { connected: false, status: 'disconnected' };
-        _setText('msg-status', 'disconnected');
-        _setText('stat-radio-val', 'Offline');
-        _refreshCommandBanner();
-    }
+    _applyServiceState(
+        'upstream',
+        upstream.enabled ? (upstream.connected ? 'online' : 'error') : 'idle',
+        upstream.enabled ? (upstream.url || '--') : 'disabled',
+        upstream.enabled
+            ? (upstream.connected ? 'connected to Meshradar cloud' : 'enabled but not connected')
+            : 'cloud uplink disabled'
+    );
 }
 
-async function _refreshRadioNodes() {
-    try {
-        const res = await fetch('/api/radio/nodes');
-        const data = await res.json();
-        const nodes = _mergeNodeCollections(data.nodes || []);
-        latestRadioNodes = nodes.slice();
-
-        const target = document.getElementById('message-target');
-        if (target) {
-            const current = target.value;
-            target.innerHTML = '';
-
-            const broadcastOpt = document.createElement('option');
-            broadcastOpt.value = '';
-            broadcastOpt.textContent = 'Channel Broadcast';
-            target.appendChild(broadcastOpt);
-
-            _sortedNodes(nodes).forEach((node) => {
-                const nodeId = node.node_id || '';
-                if (!nodeId || _isSelfNode(node)) {
-                    return;
-                }
-
-                const opt = document.createElement('option');
-                opt.value = nodeId;
-                opt.textContent = _nodeTargetLabel(node);
-                target.appendChild(opt);
-            });
-
-            if ([...target.options].some((o) => o.value === current)) {
-                target.value = current;
-            }
-        }
-
-        _refreshNodeFilterOptions();
-        _syncMessageMode();
-    } catch (e) {
-        console.error('Radio nodes refresh failed:', e);
-    }
+function _renderHealthMetrics(metrics, device) {
+    _setText('health-cpu-val', `${metrics.cpu_percent}%`);
+    _setText('health-ram-val', `${metrics.memory_percent}%`);
+    _setText('health-ram-sub', `${metrics.memory_used_mb} / ${metrics.memory_total_mb} MB`);
+    _setText('health-disk-val', `${metrics.disk_percent}%`);
+    _setText('health-disk-sub', `${metrics.disk_used_gb} / ${metrics.disk_total_gb} GB`);
+    _setText('health-temp-val', metrics.cpu_temp_c != null ? `${metrics.cpu_temp_c}°C` : 'N/A');
+    _setText('health-uptime-val', _formatUptime(device.uptime_seconds || 0));
+    _setText('health-ws-val', device.websocket_clients ?? 0);
 }
 
-async function _refreshChannels() {
-    try {
-        const res = await fetch('/api/radio/channels');
-        const data = await res.json();
-        const channels = (data.channels || []).length ? data.channels : [{ name: 'Broadcast', index: 0, pinned: true }];
-        latestChannels = channels.slice();
+function _renderHealthPage(status) {
+    const mqtt = status.mqtt || {};
+    const tak = status.tak || {};
+    const upstream = status.upstream || {};
+    const relay = status.relay || {};
 
-        const select = document.getElementById('message-channel');
-        if (select) {
-            const current = select.value;
-            select.innerHTML = '';
-
-            _sortedChannels(channels).forEach((ch) => {
-                const idx = Number.isFinite(Number(ch.index)) ? Number(ch.index) : 0;
-                const name = _channelName(ch);
-                const opt = document.createElement('option');
-                opt.value = String(idx);
-                opt.textContent = _channelOptionLabel(ch);
-                opt.dataset.channelName = name;
-                select.appendChild(opt);
-            });
-
-            if (select.options.length === 0) {
-                const opt = document.createElement('option');
-                opt.value = '0';
-                opt.textContent = 'Broadcast';
-                opt.dataset.channelName = 'Broadcast';
-                select.appendChild(opt);
-            }
-
-            if ([...select.options].some((o) => o.value === current)) {
-                select.value = current;
-            }
-        }
-
-        _refreshMessageChannelFilterOptions();
-        _syncMessageMode();
-    } catch (e) {
-        console.error('Channel refresh failed:', e);
-    }
-}
-
-async function _refreshMessages() {
-    try {
-        const res = await fetch(`/api/messages?limit=${MESSAGE_LIMIT}`);
-        const data = await res.json();
-        messageState.allMessages = data.messages || [];
-        _refreshMessageChannelFilterOptions();
-        _renderMessages({ preserveScroll: true });
-    } catch (e) {
-        console.error('Message refresh failed:', e);
-    }
-}
-
-async function _sendMessage() {
-    const target = document.getElementById('message-target');
-    const channel = document.getElementById('message-channel');
-    const textBox = document.getElementById('message-text');
-
-    const text = (textBox?.value || '').trim();
-    if (!text) {
-        _setText('msg-status', 'message required');
-        return;
-    }
-
-    const to = target?.value || '';
-    const targetNode = latestRadioNodes.find((node) => _normalizeNodeId(node.node_id) === _normalizeNodeId(to));
-    if (to && _isSelfNode(targetNode)) {
-        _setText('msg-status', 'cannot send to self');
-        return;
-    }
-    const isDirect = !!to;
-    const channelIndex = isDirect ? 0 : parseInt(channel?.value || '0', 10);
-    const channelName = isDirect
-        ? 'Direct message'
-        : (channel?.selectedOptions?.[0]?.dataset?.channelName || 'Broadcast');
-
-    try {
-        _setText('msg-status', 'sending...');
-
-        const res = await fetch('/api/messages/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text,
-                to: to || null,
-                channel_index: Number.isFinite(channelIndex) ? channelIndex : 0,
-                channel_name: channelName,
-            }),
-        });
-
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            throw new Error(data.detail || data.error || 'send failed');
-        }
-
-        if (textBox) textBox.value = '';
-        _setText('msg-status', 'sent');
-        await _refreshMessages();
-    } catch (e) {
-        console.error('Send failed:', e);
-        _setText('msg-status', e.message || 'send failed');
-    }
-}
-
-function _bindMessageControls() {
-    const bindings = [
-        ['message-filter-node', 'nodeId'],
-        ['message-filter-channel', 'channel'],
-        ['message-filter-direction', 'direction'],
-        ['message-filter-query', 'query'],
-    ];
-
-    bindings.forEach(([id, key]) => {
-        const el = document.getElementById(id);
-        if (!el) {
-            return;
-        }
-        const eventName = el.tagName === 'INPUT' ? 'input' : 'change';
-        el.addEventListener(eventName, () => {
-            messageState.filters[key] = el.value.trim();
-            _renderMessages({ resetScroll: true });
-        });
-    });
-
-    const target = document.getElementById('message-target');
-    if (target) {
-        target.addEventListener('change', _syncMessageMode);
-    }
-
-    const followToggle = document.getElementById('message-follow-toggle');
-    if (followToggle) {
-        followToggle.checked = true;
-        followToggle.addEventListener('change', () => {
-            messageState.followLatest = followToggle.checked;
-            _updateMessageFollowIndicator();
-            if (messageState.followLatest) {
-                _scrollMessageFeedToBottom();
-            }
-        });
-    }
-
-    const clearBtn = document.getElementById('message-clear-filters');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            messageState.filters = {
-                nodeId: '',
-                channel: '',
-                direction: '',
-                query: '',
-            };
-            _setControlValue('message-filter-node', '');
-            _setControlValue('message-filter-channel', '');
-            _setControlValue('message-filter-direction', '');
-            _setControlValue('message-filter-query', '');
-            _renderMessages({ resetScroll: true });
-        });
-    }
-
-    const purgeVisibleBtn = document.getElementById('message-purge-visible');
-    if (purgeVisibleBtn) {
-        purgeVisibleBtn.addEventListener('click', async () => {
-            const visible = _filteredMessages();
-            if (!visible.length) {
-                _setText('message-feed-status', 'No matching messages to purge');
-                return;
-            }
-            if (!window.confirm(`Purge ${visible.length} visible messages?`)) {
-                return;
-            }
-            await _purgeMessages(messageState.filters);
-        });
-    }
-
-    const purgeAllBtn = document.getElementById('message-purge-all');
-    if (purgeAllBtn) {
-        purgeAllBtn.addEventListener('click', async () => {
-            if (!messageState.allMessages.length) {
-                _setText('message-feed-status', 'No messages to purge');
-                return;
-            }
-            if (!window.confirm('Purge all message history?')) {
-                return;
-            }
-            await _purgeMessages({});
-        });
-    }
-
-    const feed = document.getElementById('message-feed');
-    if (feed) {
-        feed.addEventListener('scroll', () => {
-            _updateMessageFollowIndicator();
-        });
-    }
-}
-
-function _bindPacketControls() {
-    const packetBindings = [
-        ['packet-filter-node', 'nodeId'],
-        ['packet-filter-protocol', 'protocol'],
-        ['packet-filter-type', 'packetType'],
-        ['packet-filter-query', 'query'],
-    ];
-
-    packetBindings.forEach(([id, key]) => {
-        const el = document.getElementById(id);
-        if (!el || !packetFeedInstance) {
-            return;
-        }
-        const eventName = el.tagName === 'INPUT' ? 'input' : 'change';
-        el.addEventListener(eventName, () => {
-            packetFeedInstance.setFilters({ [key]: el.value.trim() });
-        });
-    });
-
-    const clearBtn = document.getElementById('packet-clear-filters');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            _setControlValue('packet-filter-node', '');
-            _setControlValue('packet-filter-protocol', '');
-            _setControlValue('packet-filter-type', '');
-            _setControlValue('packet-filter-query', '');
-            if (packetFeedInstance) {
-                packetFeedInstance.setFilters({
-                    nodeId: '',
-                    protocol: '',
-                    packetType: '',
-                    query: '',
-                });
-            }
-        });
-    }
-
-    const followToggle = document.getElementById('packet-follow-toggle');
-    if (followToggle) {
-        followToggle.checked = true;
-        followToggle.addEventListener('change', () => {
-            if (packetFeedInstance) {
-                packetFeedInstance.setFollowLive(followToggle.checked);
-            }
-        });
-    }
-
-    const purgeVisibleBtn = document.getElementById('packet-purge-visible');
-    if (purgeVisibleBtn) {
-        purgeVisibleBtn.addEventListener('click', async () => {
-            if (!packetFeedInstance) {
-                return;
-            }
-            const visible = packetFeedInstance.getVisiblePackets();
-            if (!visible.length) {
-                _setText('packet-feed-status', 'No matching packets to purge');
-                return;
-            }
-            if (!window.confirm(`Purge ${visible.length} visible packets from history?`)) {
-                return;
-            }
-            await _purgePackets(packetFeedInstance.getFilters());
-        });
-    }
-
-    const purgeAllBtn = document.getElementById('packet-purge-all');
-    if (purgeAllBtn) {
-        purgeAllBtn.addEventListener('click', async () => {
-            if (!packetFeedInstance || !packetFeedInstance.getTotalCount()) {
-                _setText('packet-feed-status', 'No packets to purge');
-                return;
-            }
-            if (!window.confirm('Purge all packet history?')) {
-                return;
-            }
-            await _purgePackets({});
-        });
-    }
-}
-
-function _bindNodeControls(nodeMap, nodeList) {
-    document.addEventListener('meshtak:node-selected', (event) => {
-        const nodeId = event.detail?.node?.node_id;
-        if (nodeId) {
-            nodeMap.focusNode(nodeId);
-        }
-    });
-
-    document.addEventListener('meshtak:node-delete-requested', async (event) => {
-        const node = event.detail?.node;
-        const nodeId = node?.node_id;
-        if (!nodeId) {
-            return;
-        }
-        const label = _nodeShortLabel(node);
-        if (!window.confirm(`Delete node ${label} from the list and map?`)) {
-            return;
-        }
-        await _deleteNodes([nodeId], nodeMap, nodeList, `Deleted ${label}`);
-    });
-
-    const purgeVisibleBtn = document.getElementById('node-purge-visible');
-    if (purgeVisibleBtn) {
-        purgeVisibleBtn.addEventListener('click', async () => {
-            const visibleNodes = nodeList.getVisibleNodes();
-            const nodeIds = visibleNodes
-                .map((node) => String(node?.node_id || '').trim())
-                .filter(Boolean);
-            if (!nodeIds.length) {
-                _setText('node-feed-status', 'No visible nodes to purge');
-                return;
-            }
-            if (!window.confirm(`Purge ${nodeIds.length} visible nodes from the list and map?`)) {
-                return;
-            }
-            await _deleteNodes(nodeIds, nodeMap, nodeList, `Purged ${nodeIds.length} visible nodes`);
-        });
-    }
-
-    const purgeAllBtn = document.getElementById('node-purge-all');
-    if (purgeAllBtn) {
-        purgeAllBtn.addEventListener('click', async () => {
-            const allNodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
-            const nodeIds = allNodes
-                .map((node) => String(node?.node_id || '').trim())
-                .filter(Boolean);
-            if (!nodeIds.length) {
-                _setText('node-feed-status', 'No nodes to purge');
-                return;
-            }
-            if (!window.confirm(`Purge all ${nodeIds.length} nodes from the list and map?`)) {
-                return;
-            }
-            await _deleteNodes(nodeIds, nodeMap, nodeList, `Purged ${nodeIds.length} nodes`);
-        });
-    }
-}
-
-function _bindDashboardWorkspace(nodeMap) {
-    const workspace = document.getElementById('dashboard-workspace');
-    if (!workspace) {
-        return;
-    }
-    const storageKey = 'meshtak.dashboard.layout.v1';
-    const widgets = Array.from(workspace.querySelectorAll('.dashboard-widget'));
-    const state = _loadWidgetState(widgets, storageKey);
-    let activeDragId = '';
-
-    const applyState = () => {
-        widgets.forEach((widget) => {
-            const widgetId = widget.dataset.widgetId;
-            const widgetState = state[widgetId];
-            if (!widgetState) {
-                return;
-            }
-            widget.style.order = String(widgetState.order);
-            widget.style.gridColumn = `span ${widgetState.cols}`;
-            widget.style.gridRow = `span ${widgetState.rows}`;
-        });
-        _saveWidgetState(state, storageKey);
-        nodeMap.invalidateSize();
-    };
-
-    widgets.forEach((widget) => {
-        const widgetId = widget.dataset.widgetId;
-        const dragHandle = widget.querySelector('.widget-drag-handle');
-        const resizeHandle = widget.querySelector('.widget-resize-handle');
-
-        if (dragHandle) {
-            dragHandle.addEventListener('dragstart', (event) => {
-                if (window.innerWidth <= 1024) {
-                    event.preventDefault();
-                    return;
-                }
-                activeDragId = widgetId;
-                widget.classList.add('dashboard-widget--dragging');
-                if (event.dataTransfer) {
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', widgetId);
-                }
-            });
-
-            dragHandle.addEventListener('dragend', () => {
-                activeDragId = '';
-                widget.classList.remove('dashboard-widget--dragging');
-                widgets.forEach((item) => item.classList.remove('dashboard-widget--drop-target'));
-            });
-        }
-
-        widget.addEventListener('dragover', (event) => {
-            if (!activeDragId || activeDragId === widgetId || window.innerWidth <= 1024) {
-                return;
-            }
-            event.preventDefault();
-            widget.classList.add('dashboard-widget--drop-target');
-        });
-
-        widget.addEventListener('dragleave', () => {
-            widget.classList.remove('dashboard-widget--drop-target');
-        });
-
-        widget.addEventListener('drop', (event) => {
-            if (!activeDragId || activeDragId === widgetId || window.innerWidth <= 1024) {
-                return;
-            }
-            event.preventDefault();
-            widget.classList.remove('dashboard-widget--drop-target');
-            const draggedState = state[activeDragId];
-            const targetState = state[widgetId];
-            if (!draggedState || !targetState) {
-                return;
-            }
-            const order = draggedState.order;
-            draggedState.order = targetState.order;
-            targetState.order = order;
-            applyState();
-        });
-
-        if (resizeHandle) {
-            let startX = 0;
-            let startY = 0;
-            let startCols = 0;
-            let startRows = 0;
-
-            const stopResizing = () => {
-                resizeHandle.classList.remove('is-dragging');
-                window.removeEventListener('pointermove', handlePointerMove);
-                window.removeEventListener('pointerup', stopResizing);
-            };
-
-            const handlePointerMove = (event) => {
-                const rect = workspace.getBoundingClientRect();
-                const columnGap = 12;
-                const rowGap = 12;
-                const colWidth = (rect.width - (11 * columnGap)) / 12;
-                const rowHeight = 64;
-                const deltaCols = Math.round((event.clientX - startX) / Math.max(colWidth + columnGap, 1));
-                const deltaRows = Math.round((event.clientY - startY) / Math.max(rowHeight + rowGap, 1));
-                const minCols = parseInt(widget.dataset.minCols || '4', 10);
-                const minRows = parseInt(widget.dataset.minRows || '4', 10);
-                const nextCols = Math.max(minCols, Math.min(12, startCols + deltaCols));
-                const nextRows = Math.max(minRows, Math.min(12, startRows + deltaRows));
-                state[widgetId].cols = nextCols;
-                state[widgetId].rows = nextRows;
-                applyState();
-            };
-
-            resizeHandle.addEventListener('pointerdown', (event) => {
-                if (window.innerWidth <= 1024) {
-                    return;
-                }
-                startX = event.clientX;
-                startY = event.clientY;
-                startCols = state[widgetId].cols;
-                startRows = state[widgetId].rows;
-                resizeHandle.classList.add('is-dragging');
-                window.addEventListener('pointermove', handlePointerMove);
-                window.addEventListener('pointerup', stopResizing, { once: true });
-                event.preventDefault();
-            });
-        }
-    });
-
-    applyState();
-}
-
-function _loadWidgetState(widgets, storageKey) {
-    const defaults = {};
-    widgets.forEach((widget) => {
-        defaults[widget.dataset.widgetId] = {
-            order: parseInt(widget.dataset.defaultOrder || '1', 10),
-            cols: parseInt(widget.dataset.defaultCols || '4', 10),
-            rows: parseInt(widget.dataset.defaultRows || '4', 10),
-        };
-    });
-
-    try {
-        const raw = window.localStorage.getItem(storageKey);
-        if (!raw) {
-            return defaults;
-        }
-        const parsed = JSON.parse(raw);
-        Object.keys(defaults).forEach((key) => {
-            if (!parsed[key]) {
-                parsed[key] = defaults[key];
-                return;
-            }
-            parsed[key].order = Number(parsed[key].order) || defaults[key].order;
-            parsed[key].cols = Number(parsed[key].cols) || defaults[key].cols;
-            parsed[key].rows = Number(parsed[key].rows) || defaults[key].rows;
-        });
-        return parsed;
-    } catch (_) {
-        return defaults;
-    }
-}
-
-function _saveWidgetState(state, storageKey) {
-    try {
-        window.localStorage.setItem(storageKey, JSON.stringify(state));
-    } catch (_) {}
-}
-
-function _syncMessageMode() {
-    const target = document.getElementById('message-target');
-    const channel = document.getElementById('message-channel');
-    const targetHint = document.getElementById('message-target-hint');
-    const channelHint = document.getElementById('message-channel-hint');
-    if (!target || !channel) {
-        return;
-    }
-
-    const direct = !!target.value;
-    const radioUnavailable = !!target.disabled;
-    channel.disabled = radioUnavailable || direct;
-    channel.title = direct ? 'Direct messages do not use a broadcast channel' : '';
-    if (targetHint) {
-        targetHint.textContent = direct
-            ? 'Direct message selected. This will go only to the chosen node.'
-            : 'Leave this on broadcast to talk to a channel.';
-    }
-    if (channelHint) {
-        channelHint.textContent = radioUnavailable
-            ? 'Radio offline. Messaging is unavailable right now.'
-            : direct
-            ? 'Channel selection is disabled for direct messages.'
-            : 'Choose the channel for broadcast traffic.';
-    }
-}
-
-function _renderMessages({ preserveScroll = false, resetScroll = false } = {}) {
-    const feed = document.getElementById('message-feed');
-    const status = document.getElementById('message-feed-status');
-    if (!feed) {
-        return;
-    }
-
-    const filtered = _filteredMessages();
-    const previousHeight = feed.scrollHeight;
-    const previousTop = feed.scrollTop;
-    const distanceFromBottom = previousHeight - previousTop - feed.clientHeight;
-    const nearBottom = _isMessageFeedNearBottom();
-
-    feed.innerHTML = '';
-
-    filtered.forEach((msg) => {
-        const row = document.createElement('article');
-        row.className = `message-item message-item--${msg.direction || 'rx'}`;
-
-        const endpoint = msg.direction === 'tx'
-            ? _messageEndpointLabel(msg.to_name, msg.to_id, 'Broadcast')
-            : _messageEndpointLabel(msg.from_name, msg.from_id, 'Unknown');
-        const who = msg.direction === 'tx'
-            ? `TX to ${endpoint}`
-            : `RX from ${endpoint}`;
-
-        const timestamp = msg.timestamp
-            ? new Date(msg.timestamp * 1000).toLocaleTimeString()
-            : '--';
-
-        const channelLabel = msg.to_id
-            ? 'DM'
-            : (msg.channel || 'Broadcast');
-        const hopPath = msg.hop_path || '--';
-
-        row.innerHTML = `
-            <div class="message-head">
-                <span>${_escapeHtml(who)}</span>
-                <span>${_escapeHtml(timestamp)}</span>
+    const serviceList = document.getElementById('health-service-list');
+    if (serviceList) {
+        serviceList.innerHTML = [
+            ['MQTT', mqtt.enabled ? `${mqtt.connected ? 'online' : 'attention'} • ${mqtt.broker || '--'}:${mqtt.port || '--'}` : 'disabled'],
+            ['TAK', tak.enabled ? `${tak.connected ? 'online' : 'attention'} • ${tak.target || '--'}` : 'disabled'],
+            ['Cloud', upstream.enabled ? `${upstream.connected ? 'online' : 'attention'} • ${upstream.url || '--'}` : 'disabled'],
+            ['Relay', relay.enabled ? `${relay.relayed ?? 0} relayed` : 'disabled'],
+        ].map(([label, value]) => `
+            <div class="health-kv">
+                <span class="health-kv__label">${label}</span>
+                <span class="health-kv__value">${value}</span>
             </div>
-            <div class="message-meta">
-                <span>Channel: ${_escapeHtml(channelLabel)}</span>
-                <span>Hop Path: ${_escapeHtml(hopPath)}</span>
+        `).join('');
+    }
+
+    const deviceList = document.getElementById('health-device-list');
+    if (deviceList) {
+        deviceList.innerHTML = [
+            ['Device', status.device_id || '--'],
+            ['Version', status.firmware_version ? `v${status.firmware_version}` : '--'],
+            ['Uptime', _formatUptime(status.uptime_seconds || 0)],
+            ['Web Clients', status.websocket_clients ?? 0],
+        ].map(([label, value]) => `
+            <div class="health-kv">
+                <span class="health-kv__label">${label}</span>
+                <span class="health-kv__value">${value}</span>
             </div>
-            <div class="message-body">${_escapeHtml(msg.text || '')}</div>
-        `;
-
-        feed.appendChild(row);
-    });
-
-    if (status) {
-        status.textContent = filtered.length === messageState.allMessages.length
-            ? `${filtered.length} messages`
-            : `Showing ${filtered.length} of ${messageState.allMessages.length} messages`;
-    }
-
-    if (resetScroll) {
-        feed.scrollTop = feed.scrollHeight;
-    } else if (messageState.followLatest && nearBottom) {
-        feed.scrollTop = feed.scrollHeight;
-    } else if (preserveScroll) {
-        const nextHeight = feed.scrollHeight;
-        const nextTop = Math.max(0, nextHeight - feed.clientHeight - distanceFromBottom);
-        feed.scrollTop = nextTop;
-        if (previousHeight === 0) {
-            feed.scrollTop = nextHeight;
-        } else if (Math.abs(distanceFromBottom) < 1) {
-            feed.scrollTop = nextHeight;
-        } else if (!messageState.followLatest) {
-            feed.scrollTop = previousTop;
-        }
-    }
-
-    _updateMessageFollowIndicator();
-}
-
-function _filteredMessages() {
-    const { nodeId, channel, direction, query } = messageState.filters;
-    const queryText = (query || '').trim().toLowerCase();
-    const directionFilter = (direction || '').trim().toLowerCase();
-    const channelFilter = (channel || '').trim().toLowerCase();
-
-    return messageState.allMessages.filter((msg) => {
-        if (nodeId) {
-            const fromId = String(msg.from_id || '').trim();
-            const toId = String(msg.to_id || '').trim();
-            if (fromId !== nodeId && toId !== nodeId) {
-                return false;
-            }
-        }
-
-        if (channelFilter && String(msg.channel || '').trim().toLowerCase() !== channelFilter) {
-            return false;
-        }
-
-        if (directionFilter && directionFilter !== 'all' && String(msg.direction || '').trim().toLowerCase() !== directionFilter) {
-            return false;
-        }
-
-        if (queryText) {
-            const haystack = [
-                msg.text || '',
-                msg.from_name || '',
-                msg.to_name || '',
-                msg.from_id || '',
-                msg.to_id || '',
-                msg.channel || '',
-                msg.hop_path || '',
-            ].join(' ').toLowerCase();
-            if (!haystack.includes(queryText)) {
-                return false;
-            }
-        }
-
-        return true;
-    });
-}
-
-async function _purgeMessages(filters) {
-    try {
-        const res = await fetch('/api/messages/purge', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                node_id: filters.nodeId || null,
-                channel: filters.channel || null,
-                direction: filters.direction || null,
-                query: filters.query || null,
-            }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            throw new Error(data.detail || data.error || 'Unable to purge messages');
-        }
-        _setText('message-feed-status', `Purged ${data.deleted || 0} messages`);
-        await _refreshMessages();
-    } catch (err) {
-        _setText('message-feed-status', err.message || 'Unable to purge messages');
+        `).join('');
     }
 }
 
-async function _purgePackets(filters) {
-    try {
-        const res = await fetch('/api/packets/purge', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                node_id: filters.nodeId || null,
-                protocol: filters.protocol || null,
-                packet_type: filters.packetType || null,
-                query: filters.query || null,
-            }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            throw new Error(data.detail || data.error || 'Unable to purge packets');
-        }
+function _applyServiceState(key, state, endpoint, meta) {
+    const pill = document.getElementById(`service-${key}-pill`);
+    const endpointEl = document.getElementById(`service-${key}-endpoint`);
+    const metaEl = document.getElementById(`service-${key}-meta`);
+    const card = document.getElementById(`service-${key}`);
 
-        const packetsRes = await fetch(`/api/packets?limit=${PACKET_LIMIT}`);
-        const packets = await packetsRes.json();
-        const sorted = (packets || []).slice().sort((a, b) => _packetTimestamp(b) - _packetTimestamp(a));
-        if (packetFeedInstance) {
-            packetFeedInstance.setPackets(sorted);
-        }
-        _setText('packet-feed-status', `Purged ${data.deleted || 0} packets`);
-        await _updateStats();
-    } catch (err) {
-        _setText('packet-feed-status', err.message || 'Unable to purge packets');
+    if (pill) {
+        pill.textContent = state === 'online' ? 'Online' : state === 'error' ? 'Attention' : 'Idle';
+        pill.className = `service-pill service-pill--${state}`;
     }
-}
-
-async function _deleteNodes(nodeIds, nodeMap, nodeList, successMessage) {
-    try {
-        const uniqueNodeIds = Array.from(new Set((nodeIds || []).map((nodeId) => String(nodeId || '').trim()).filter(Boolean)));
-        if (!uniqueNodeIds.length) {
-            _setText('node-feed-status', 'No nodes selected');
-            return;
-        }
-
-        let response;
-        if (uniqueNodeIds.length === 1) {
-            response = await fetch(`/api/nodes/${encodeURIComponent(uniqueNodeIds[0])}`, {
-                method: 'DELETE',
-            });
-        } else {
-            response = await fetch('/api/nodes/purge', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ node_ids: uniqueNodeIds }),
-            });
-        }
-
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || data.error || 'Unable to delete nodes');
-        }
-
-        _setText('node-feed-status', successMessage || `Deleted ${data.deleted || uniqueNodeIds.length} nodes`);
-        await _refreshData(nodeMap, nodeList);
-        await _refreshRadioUi();
-        await _updateStats();
-    } catch (error) {
-        console.error('Node delete failed:', error);
-        _setText('node-feed-status', error.message || 'Unable to delete nodes');
-    }
-}
-
-function _refreshNodeFilterOptions() {
-    const selects = [
-        'message-filter-node',
-        'packet-filter-node',
-    ];
-    const mergedNodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
-    const sorted = _sortedNodes(mergedNodes);
-
-    selects.forEach((id) => {
-        const select = document.getElementById(id);
-        if (!select) {
-            return;
-        }
-
-        const current = select.value;
-        select.innerHTML = '<option value="">All nodes</option>';
-
-        sorted.forEach((node) => {
-            const nodeId = node.node_id || '';
-            if (!nodeId) {
-                return;
-            }
-            const option = document.createElement('option');
-            option.value = nodeId;
-            option.textContent = _nodeShortLabel(node);
-            select.appendChild(option);
-        });
-
-        if ([...select.options].some((opt) => opt.value === current)) {
-            select.value = current;
-        }
-    });
-}
-
-function _refreshMessageChannelFilterOptions() {
-    const select = document.getElementById('message-filter-channel');
-    if (!select) {
-        return;
-    }
-
-    const current = select.value;
-    const observed = new Set();
-
-    latestChannels.forEach((channel) => {
-        observed.add(_channelName(channel));
-    });
-
-    messageState.allMessages.forEach((msg) => {
-        if (msg.channel) {
-            observed.add(String(msg.channel).trim());
-        }
-    });
-
-    const names = Array.from(observed)
-        .filter(Boolean)
-        .sort((a, b) => {
-            const aPinned = latestChannels.some((ch) => _channelName(ch) === a && !!ch.pinned) ? -1 : 0;
-            const bPinned = latestChannels.some((ch) => _channelName(ch) === b && !!ch.pinned) ? -1 : 0;
-            if (aPinned !== bPinned) {
-                return aPinned - bPinned;
-            }
-            return a.localeCompare(b);
-        });
-
-    select.innerHTML = '<option value="">All channels</option>';
-    names.forEach((name) => {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        select.appendChild(option);
-    });
-
-    if ([...select.options].some((opt) => opt.value === current)) {
-        select.value = current;
-    }
-}
-
-function _mergeNodeCollections(...collections) {
-    const merged = new Map();
-    collections.flat().forEach((node) => {
-        const nodeId = _normalizeNodeId(node?.node_id);
-        if (!nodeId) {
-            return;
-        }
-        merged.set(nodeId, { ...(merged.get(nodeId) || {}), ...node, node_id: nodeId });
-    });
-    return Array.from(merged.values());
-}
-
-function _sortedNodes(nodes) {
-    return (nodes || [])
-        .slice()
-        .sort((a, b) => _nodeShortLabel(a).localeCompare(_nodeShortLabel(b)));
-}
-
-function _sortedChannels(channels) {
-    return (channels || [])
-        .slice()
-        .sort((a, b) => {
-            const aPinned = !!a.pinned;
-            const bPinned = !!b.pinned;
-            if (aPinned !== bPinned) {
-                return aPinned ? -1 : 1;
-            }
-            const aIndex = Number.isFinite(Number(a.index)) ? Number(a.index) : 999;
-            const bIndex = Number.isFinite(Number(b.index)) ? Number(b.index) : 999;
-            if (aIndex !== bIndex) {
-                return aIndex - bIndex;
-            }
-            return _channelName(a).localeCompare(_channelName(b));
-        });
-}
-
-function _nodeShortLabel(node) {
-    return node.short_name || node.display_name || node.long_name || node.node_id || 'Unknown';
-}
-
-function _nodeTargetLabel(node) {
-    if (_isSelfNode(node)) {
-        return `${_nodeShortLabel(node)} (self)`;
-    }
-    return `${_nodeShortLabel(node)} (${_normalizeNodeId(node.node_id)})`;
-}
-
-function _messageEndpointLabel(name, nodeId, fallback) {
-    const normalizedId = _normalizeNodeId(nodeId);
-    if (!normalizedId) {
-        return name || fallback;
-    }
-
-    const matchedNode = _mergeNodeCollections(latestNodes, latestRadioNodes)
-        .find((node) => _normalizeNodeId(node.node_id) === normalizedId);
-    const preferredName = String(
-        matchedNode?.short_name ||
-        matchedNode?.display_name ||
-        matchedNode?.long_name ||
-        name ||
-        ''
-    ).trim();
-
-    if (preferredName && _normalizeNodeId(preferredName) !== normalizedId) {
-        return `${preferredName} (${normalizedId})`;
-    }
-    return normalizedId;
-}
-
-function _packetNodeLabel(nodeId) {
-    const normalizedId = _normalizeNodeId(nodeId);
-    if (!normalizedId) {
-        return '';
-    }
-    if (['!ffffffff', '!ffff'].includes(normalizedId)) {
-        return 'BCAST';
-    }
-
-    const matchedNode = _findNodeForPacketId(nodeId);
-    const preferredName = String(
-        matchedNode?.short_name ||
-        matchedNode?.display_name ||
-        matchedNode?.long_name ||
-        ''
-    ).trim();
-    if (preferredName && _normalizeNodeId(preferredName) !== normalizedId) {
-        return `${preferredName} (${normalizedId})`;
-    }
-    return _shortPacketNodeId(normalizedId);
-}
-
-function _packetNodeMatches(packetNodeId, filterNodeId) {
-    const packetId = _normalizeNodeId(packetNodeId);
-    const filterId = _normalizeNodeId(filterNodeId);
-    if (!packetId || !filterId) {
-        return false;
-    }
-    if (packetId === filterId) {
-        return true;
-    }
-    const matchedNode = _findNodeForPacketId(packetNodeId);
-    return !!matchedNode && _normalizeNodeId(matchedNode.node_id) === filterId;
-}
-
-function _findNodeForPacketId(nodeId) {
-    const normalizedId = _normalizeNodeId(nodeId);
-    if (!normalizedId) {
-        return null;
-    }
-    const normalizedSuffix = normalizedId.replace(/^!/, '');
-    const nodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
-    return nodes.find((node) => {
-        const candidateId = _normalizeNodeId(node.node_id);
-        const candidateSuffix = candidateId.replace(/^!/, '');
-        const hasUsableSuffix = candidateSuffix.length >= 4 && normalizedSuffix.length >= 4;
-        return candidateId === normalizedId ||
-            candidateSuffix === normalizedSuffix ||
-            (hasUsableSuffix && (
-                candidateSuffix.endsWith(normalizedSuffix) ||
-                normalizedSuffix.endsWith(candidateSuffix)
-            ));
-    }) || null;
-}
-
-function _shortPacketNodeId(nodeId) {
-    const normalizedId = _normalizeNodeId(nodeId);
-    if (!normalizedId) {
-        return '--';
-    }
-    const raw = normalizedId.replace(/^!/, '');
-    if (['ffffffff', 'ffff'].includes(raw)) {
-        return 'BCAST';
-    }
-    return raw.length > 6 ? `!${raw.slice(-4)}` : normalizedId;
-}
-
-function _normalizeNodeId(value) {
-    const text = String(value || '').trim();
-    if (!text) {
-        return '';
-    }
-    return text.startsWith('!') ? text.toLowerCase() : `!${text.toLowerCase()}`;
-}
-
-function _isSelfNode(node) {
-    if (!node || !latestDevice) {
-        return false;
-    }
-    const deviceName = String(latestDevice.device_name || '').trim().toLowerCase();
-    const nodeNames = [
-        node.short_name,
-        node.display_name,
-        node.long_name,
-    ]
-        .map((value) => String(value || '').trim().toLowerCase())
-        .filter(Boolean);
-    if (deviceName && nodeNames.includes(deviceName)) {
-        return true;
-    }
-
-    const nodeLat = Number(node.latitude ?? node.lat);
-    const nodeLon = Number(node.longitude ?? node.lon);
-    const deviceLat = Number(latestDevice.latitude);
-    const deviceLon = Number(latestDevice.longitude);
-    if (
-        Number.isFinite(nodeLat) &&
-        Number.isFinite(nodeLon) &&
-        Number.isFinite(deviceLat) &&
-        Number.isFinite(deviceLon)
-    ) {
-        const latDelta = Math.abs(nodeLat - deviceLat);
-        const lonDelta = Math.abs(nodeLon - deviceLon);
-        if (latDelta < 0.00001 && lonDelta < 0.00001) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function _channelName(channel) {
-    if (!channel) {
-        return 'Broadcast';
-    }
-    return channel.name || (Number(channel.index) === 0 ? 'Broadcast' : `Channel ${channel.index ?? 0}`);
-}
-
-function _isDirectMessageSelected() {
-    const target = document.getElementById('message-target');
-    return !!(target && target.value);
-}
-
-function _isMessageFeedNearBottom() {
-    const feed = document.getElementById('message-feed');
-    if (!feed) {
-        return true;
-    }
-    return (feed.scrollHeight - feed.scrollTop - feed.clientHeight) <= 24;
-}
-
-function _scrollMessageFeedToBottom() {
-    const feed = document.getElementById('message-feed');
-    if (feed) {
-        feed.scrollTop = feed.scrollHeight;
-    }
-}
-
-function _updateMessageFollowIndicator() {
-    const indicator = document.getElementById('message-follow-state');
-    if (!indicator) {
-        return;
-    }
-    if (!messageState.followLatest) {
-        indicator.textContent = 'manual scroll';
-        return;
-    }
-    indicator.textContent = _isMessageFeedNearBottom() ? 'following latest' : 'paused';
-}
-
-function _packetTimestamp(packet) {
-    if (!packet) {
-        return 0;
-    }
-    if (packet.rx_time) {
-        return Number(packet.rx_time);
-    }
-    if (packet.timestamp) {
-        return Math.floor(new Date(packet.timestamp).getTime() / 1000);
-    }
-    return 0;
-}
-
-function _setControlValue(id, value) {
-    const el = document.getElementById(id);
-    if (el) {
-        el.value = value;
-    }
-}
-
-function _escapeHtml(str) {
-    const el = document.createElement('span');
-    el.textContent = String(str || '');
-    return el.innerHTML;
+    if (endpointEl) endpointEl.textContent = endpoint;
+    if (metaEl) metaEl.textContent = meta;
+    if (card) card.dataset.state = state;
 }
 
 let _totalPackets = 0;
@@ -1465,16 +310,11 @@ function _formatUptime(totalSeconds) {
 }
 
 async function _checkForUpdate() {
-    const badge = document.getElementById('update-badge');
-    if (!badge || !latestAuth.show_update_notices) {
-        if (badge) {
-            badge.classList.add('hidden');
-        }
-        return;
-    }
     try {
         const res = await fetch('/api/device/update-check');
         const data = await res.json();
+        const badge = document.getElementById('update-badge');
+        if (!badge) return;
         if (data.update_available) {
             badge.classList.remove('hidden');
             badge.title = `Update available (local: ${data.local_version}, remote: ${data.remote_version})`;
@@ -1484,1121 +324,29 @@ async function _checkForUpdate() {
     } catch (_) {}
 }
 
-function _bindAuthControls() {
-    const loginBtn = document.getElementById('auth-login');
-    const logoutBtn = document.getElementById('auth-logout');
-    const password = document.getElementById('auth-password');
+function _setupTabs() {
+    document.querySelectorAll('.tab-bar__btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const tabId = btn.dataset.tab;
+            document.querySelectorAll('.tab-bar__btn').forEach((b) => b.classList.remove('tab-bar__btn--active'));
+            btn.classList.add('tab-bar__btn--active');
 
-    if (loginBtn) {
-        loginBtn.addEventListener('click', _login);
-    }
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', _logout);
-    }
-    if (password) {
-        password.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                _login();
+            document.querySelectorAll('.tab-content').forEach((tc) => tc.classList.remove('tab-content--active'));
+            const target = document.getElementById(`tab-${tabId}`);
+            if (target) target.classList.add('tab-content--active');
+
+            if (tabId === 'messages' && window.messagingPanel) {
+                window.messagingPanel.onActivated();
+                window.messagingPanel.resetUnreadBadge();
+            }
+            if (tabId === 'radio' && window.radioSettings) {
+                window.radioSettings.onActivated();
+            }
+            if (tabId === 'mapview' && window.nodeMapPage) {
+                setTimeout(() => window.nodeMapPage.invalidateSize(), 60);
             }
         });
-    }
-}
-
-function _setAuthShellState(authenticated) {
-    document.body.classList.toggle('auth-authenticated', authenticated);
-    document.body.classList.toggle('auth-unauthenticated', !authenticated);
-}
-
-function _bindUserAccountControls() {
-    const createBtn = document.getElementById('account-create');
-    const refreshBtn = document.getElementById('account-refresh');
-    const password = document.getElementById('account-password');
-
-    if (createBtn) {
-        createBtn.addEventListener('click', _createUserAccount);
-    }
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', _loadUserAccounts);
-    }
-    if (password) {
-        password.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                _createUserAccount();
-            }
-        });
-    }
-}
-
-async function _refreshAuthStatus() {
-    try {
-        const response = await fetch('/api/auth/status');
-        latestAuth = await response.json();
-    } catch (_) {
-        latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
-    }
-    _renderAuthState();
-    await _loadUserAccounts();
-}
-
-async function _login() {
-    const username = document.getElementById('auth-username')?.value.trim() || '';
-    const password = document.getElementById('auth-password')?.value || '';
-    if (!username || !password) {
-        _setText('auth-status', 'Enter username and password');
-        return;
-    }
-
-    try {
-        const response = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || 'Login failed');
-        }
-        latestAuth = data;
-        _setText('auth-status', 'Access granted. Launching command board...');
-        document.body.classList.add('auth-launching');
-        _setValue('auth-password', '');
-        _renderAuthState();
-        setTimeout(async () => {
-            document.body.classList.remove('auth-launching');
-            _renderAuthState();
-            await _loadUserAccounts();
-            _checkForUpdate();
-        }, 1050);
-    } catch (error) {
-        document.body.classList.remove('auth-launching');
-        _setText('auth-status', error.message || 'Login failed');
-    }
-}
-
-async function _logout() {
-    try {
-        await fetch('/api/auth/logout', { method: 'POST' });
-    } catch (_) {}
-    latestAuth = { authenticated: false, role: '', username: '', show_update_notices: false };
-    document.body.classList.remove('auth-launching');
-    _renderAuthState();
-    _renderUserAccounts([]);
-    _checkForUpdate();
-}
-
-function _renderAuthState() {
-    const form = document.getElementById('auth-form');
-    const logout = document.getElementById('auth-logout');
-    const status = document.getElementById('auth-status');
-    const sessionStatus = document.getElementById('auth-session-status');
-    const radioConfigNav = document.getElementById('radio-config-nav');
-    const radioConfigPanel = document.getElementById('radio-config-panel');
-    const authenticated = !!latestAuth.authenticated;
-    const isAdmin = authenticated && latestAuth.role === 'admin';
-
-    _setAuthShellState(authenticated);
-    if (form) {
-        form.classList.toggle('hidden', authenticated);
-    }
-    if (logout) {
-        logout.classList.toggle('hidden', !authenticated);
-    }
-    if (status) {
-        status.textContent = authenticated && document.body.classList.contains('auth-launching')
-            ? 'Access granted. Launching command board...'
-            : authenticated
-            ? `${latestAuth.username || 'user'} / ${latestAuth.role || 'user'}`
-            : 'Not signed in';
-    }
-    if (sessionStatus) {
-        sessionStatus.textContent = authenticated
-            ? `${latestAuth.username || 'user'} / ${latestAuth.role || 'user'}`
-            : 'Not signed in';
-    }
-    if (radioConfigNav) {
-        radioConfigNav.classList.toggle('hidden', !isAdmin);
-    }
-    if (radioConfigPanel) {
-        radioConfigPanel.classList.toggle('hidden', !isAdmin);
-        radioConfigPanel.classList.toggle('active', false);
-    }
-    if (!isAdmin && window.location.hash === '#radio-config') {
-        history.replaceState(null, '', '#dashboard');
-    }
-    if (isAdmin) {
-        _loadRadioConfig();
-    } else {
-        _clearRadioConfigPoll();
-        latestRadioConfigData = null;
-    }
-    _syncRadioConnectionFields();
-}
-
-async function _loadUserAccounts() {
-    const section = document.getElementById('admin-accounts-section');
-    const isAdmin = latestAuth.authenticated && latestAuth.role === 'admin';
-    if (section) {
-        section.classList.toggle('hidden', !isAdmin);
-    }
-    if (!isAdmin) {
-        _renderUserAccounts([]);
-        _setText('account-settings-status', 'Admin login required');
-        return;
-    }
-
-    try {
-        const response = await fetch('/api/auth/users');
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || 'Unable to load accounts');
-        }
-        _renderUserAccounts(data.users || []);
-        _setText('account-settings-status', 'Accounts loaded');
-    } catch (error) {
-        _setText('account-settings-status', error.message || 'Unable to load accounts');
-    }
-}
-
-async function _createUserAccount() {
-    const username = document.getElementById('account-username')?.value.trim() || '';
-    const password = document.getElementById('account-password')?.value || '';
-    const role = document.getElementById('account-role')?.value || 'user';
-
-    if (!latestAuth.authenticated || latestAuth.role !== 'admin') {
-        _setText('account-settings-status', 'Admin login required');
-        return;
-    }
-    if (!username || !password) {
-        _setText('account-settings-status', 'Enter username and password');
-        return;
-    }
-
-    try {
-        const response = await fetch('/api/auth/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, role }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || 'Unable to create account');
-        }
-        _setValue('account-username', '');
-        _setValue('account-password', '');
-        _setValue('account-role', 'user');
-        _setText('account-settings-status', `Created ${data.user?.username || username}`);
-        await _loadUserAccounts();
-    } catch (error) {
-        _setText('account-settings-status', error.message || 'Unable to create account');
-    }
-}
-
-function _renderUserAccounts(users) {
-    const list = document.getElementById('account-list');
-    if (!list) {
-        return;
-    }
-    list.innerHTML = '';
-
-    if (!users.length) {
-        const empty = document.createElement('div');
-        empty.className = 'account-list__empty';
-        empty.textContent = 'No accounts loaded';
-        list.appendChild(empty);
-        return;
-    }
-
-    users.forEach((user) => {
-        const item = document.createElement('div');
-        item.className = 'account-item';
-
-        const name = document.createElement('span');
-        name.className = 'account-item__name';
-        name.textContent = user.username || 'unknown';
-
-        const role = document.createElement('span');
-        role.className = user.role === 'admin' ? 'account-item__role account-item__role--admin' : 'account-item__role';
-        role.textContent = user.role || 'user';
-
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'account-item__delete';
-        deleteBtn.type = 'button';
-        deleteBtn.textContent = 'Delete';
-        deleteBtn.disabled = latestAuth.username === user.username;
-        deleteBtn.title = deleteBtn.disabled ? 'You cannot delete the active login' : `Delete ${user.username}`;
-        deleteBtn.addEventListener('click', () => _deleteUserAccount(user.username));
-
-        item.appendChild(name);
-        item.appendChild(role);
-        item.appendChild(deleteBtn);
-        list.appendChild(item);
     });
-}
-
-async function _deleteUserAccount(username) {
-    if (!username) {
-        return;
-    }
-    if (!latestAuth.authenticated || latestAuth.role !== 'admin') {
-        _setText('account-settings-status', 'Admin login required');
-        return;
-    }
-    if (latestAuth.username === username) {
-        _setText('account-settings-status', 'You cannot delete the active login');
-        return;
-    }
-    if (!confirm(`Delete account "${username}"?`)) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/auth/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || 'Unable to delete account');
-        }
-        _setText('account-settings-status', `Deleted ${data.deleted || username}`);
-        await _loadUserAccounts();
-    } catch (error) {
-        _setText('account-settings-status', error.message || 'Unable to delete account');
-    }
-}
-
-function _bindCommandShell(nodeMap) {
-    const links = Array.from(document.querySelectorAll('[data-view-link]'));
-    const isAdminViewAllowed = (viewName) => viewName !== 'radio-config' || (latestAuth.authenticated && latestAuth.role === 'admin');
-    const viewFromHash = () => {
-        const hashView = (window.location.hash || '#dashboard').replace('#', '') || 'dashboard';
-        return hashView === 'overview' ? 'dashboard' : hashView;
-    };
-    const showView = (viewName) => {
-        const requested = ['dashboard', 'map', 'nodes', 'messages', 'radio-config', 'packets', 'stats'].includes(viewName)
-            ? viewName
-            : 'dashboard';
-        const normalized = isAdminViewAllowed(requested) ? requested : 'dashboard';
-        const dashboardMode = normalized === 'dashboard';
-        const dashboardViews = new Set(['dashboard', 'map', 'nodes', 'messages']);
-
-        document.querySelectorAll('[data-view]').forEach((view) => {
-            const isTarget = dashboardMode ? dashboardViews.has(view.dataset.view) : view.dataset.view === normalized;
-            const isBlocked = view.dataset.view === 'radio-config' && !isAdminViewAllowed('radio-config');
-            view.classList.toggle('active', isTarget && !isBlocked);
-        });
-
-        links.forEach((link) => {
-            link.classList.toggle('active', link.dataset.viewLink === normalized);
-        });
-
-        const workspace = document.querySelector('.workspace');
-        if (workspace) {
-            workspace.classList.toggle('workspace--dashboard', dashboardMode);
-        }
-
-        if (normalized === 'map' || dashboardMode) {
-            nodeMap.invalidateSize();
-        }
-        if (normalized === 'radio-config' && isAdminViewAllowed('radio-config')) {
-            _loadRadioConfig();
-        }
-    };
-
-    links.forEach((item) => {
-        item.addEventListener('click', (event) => {
-            event.preventDefault();
-            const viewName = item.dataset.viewLink || 'dashboard';
-            const targetView = isAdminViewAllowed(viewName) ? viewName : 'dashboard';
-            history.pushState(null, '', `#${targetView}`);
-            showView(targetView);
-        });
-    });
-
-    window.addEventListener('popstate', () => showView(viewFromHash()));
-    showView(viewFromHash());
-}
-
-function _startCommandClock() {
-    const tick = () => {
-        const clock = document.getElementById('hdr-clock');
-        if (clock) {
-            clock.textContent = new Date().toLocaleTimeString();
-        }
-    };
-    tick();
-    setInterval(tick, 1000);
-}
-
-function _refreshCommandBanner() {
-    const banner = document.querySelector('.status-banner');
-    if (!banner) {
-        return;
-    }
-
-    const nodes = _mergeNodeCollections(latestNodes, latestRadioNodes);
-    const packetCount = packetFeedInstance?.getTotalCount?.() || _totalPackets || 0;
-    const radioConnected = !!latestRadioStatus.connected || latestRadioStatus.status === 'connected';
-    const radioConfigPending = !!latestRadioConfigData?.config_sync?.pending;
-    let posture = 'Online';
-
-    banner.classList.remove('status-banner--degraded', 'status-banner--offline');
-
-    if (radioConfigPending) {
-        posture = 'Syncing';
-        banner.classList.add('status-banner--degraded');
-    } else if (['initializing', 'reconfiguring'].includes(String(latestRadioStatus.status || '').toLowerCase())) {
-        posture = 'Standby';
-    } else if (!radioConnected && !nodes.length && !packetCount) {
-        posture = 'Offline';
-        banner.classList.add('status-banner--offline');
-    } else if (!radioConnected) {
-        posture = 'Degraded';
-        banner.classList.add('status-banner--degraded');
-    }
-
-    _setText('network-posture', posture);
-}
-
-function _moduleLabel(status, enabled = true) {
-    if (enabled === false) {
-        return 'Disabled';
-    }
-    const text = String(status || '').trim().toLowerCase();
-    if (!text || text === 'unknown') {
-        return 'Unknown';
-    }
-    if (['running', 'connected', 'online'].includes(text)) {
-        return text.charAt(0).toUpperCase() + text.slice(1);
-    }
-    if (['initializing', 'reconfiguring', 'starting'].includes(text)) {
-        return 'Standby';
-    }
-    if (['stopped', 'disconnected', 'offline', 'error'].includes(text)) {
-        return text.charAt(0).toUpperCase() + text.slice(1);
-    }
-    return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-function _renderSystemMessages() {
-    const el = document.getElementById('system-message-list');
-    if (!el) {
-        return;
-    }
-    const messages = [];
-    if (!latestRadioStatus.connected) {
-        const radioState = String(latestRadioStatus.status || '').toLowerCase();
-        messages.push(['initializing', 'reconfiguring'].includes(radioState) ? 'Radio pulling initial config. Stand by.' : 'Radio offline.');
-    }
-    if (latestSettings.collector?.enabled === false || ['stopped', 'error', 'initializing'].includes(String(latestSettings.collector?.status || '').toLowerCase())) {
-        messages.push(`Collector ${_moduleLabel(latestSettings.collector?.status, latestSettings.collector?.enabled).toLowerCase()}.`);
-    }
-    if (!latestSettings.tak?.enabled) {
-        messages.push('TAK disabled.');
-    }
-    if (latestRadioConfigData?.config_sync?.pending) {
-        messages.push('Live radio config export requested. Current dashboard values may be incomplete until the radio responds.');
-    } else if (latestRadioConfigData?.config_sync?.status === 'error') {
-        messages.push(`Live radio config export failed: ${latestRadioConfigData?.config_sync?.last_error || 'unknown error'}.`);
-    }
-    el.innerHTML = messages.length
-        ? messages.map((message) => `<div>${_escapeHtml(message)}</div>`).join('')
-        : 'No system messages.';
-}
-
-function _bindRadioConfigControls() {
-    const refresh = document.getElementById('radio-config-refresh');
-    if (refresh) {
-        refresh.addEventListener('click', () => _loadRadioConfig(true));
-    }
-
-    const reconnect = document.getElementById('radio-config-reconnect');
-    if (reconnect) {
-        reconnect.addEventListener('click', async () => {
-            await _postJson('/api/control/radio/reconnect', {}, 'radio-config-status', 'Radio reconnect requested');
-            await _refreshRadioUi();
-            await _loadRadioConfig();
-        });
-    }
-
-    const save = document.getElementById('radio-config-save-floating');
-    if (save) {
-        save.addEventListener('click', _applyRadioConfig);
-    }
-
-    const generate = document.getElementById('private-channel-generate');
-    if (generate) {
-        generate.addEventListener('click', () => {
-            _setValue('private-channel-psk', _generatePskBase64());
-            _setText('radio-config-status', 'Generated channel PSK');
-        });
-    }
-
-    const cliDryRun = document.getElementById('radio-cli-dry-run');
-    if (cliDryRun) {
-        cliDryRun.addEventListener('click', () => _runRadioCli(true));
-    }
-
-    const cliRun = document.getElementById('radio-cli-run');
-    if (cliRun) {
-        cliRun.addEventListener('click', () => _runRadioCli(false));
-    }
-
-    const create = document.getElementById('private-channel-create');
-    if (create) {
-        create.addEventListener('click', _createPrivateChannel);
-    }
-
-    const importButton = document.getElementById('private-channel-import');
-    if (importButton) {
-        importButton.addEventListener('click', _importPrivateChannel);
-    }
-
-}
-
-function _clearRadioConfigPoll() {
-    if (radioConfigPollTimer) {
-        clearTimeout(radioConfigPollTimer);
-        radioConfigPollTimer = null;
-    }
-}
-
-function _scheduleRadioConfigPoll() {
-    _clearRadioConfigPoll();
-    radioConfigPollTimer = setTimeout(() => {
-        _loadRadioConfig(false);
-    }, 3000);
-}
-
-function _renderRadioConfigWarning(sync) {
-    const warning = document.getElementById('radio-config-warning');
-    if (!warning) {
-        return;
-    }
-    const pending = !!sync?.pending;
-    const failed = sync?.status === 'error';
-    const message = sync?.message || '';
-    if (!pending && !failed) {
-        warning.classList.add('hidden');
-        warning.textContent = '';
-        return;
-    }
-    warning.classList.remove('hidden');
-    warning.textContent = pending
-        ? `${message} Until the export returns, data shown elsewhere in the UI may not be accurate.`
-        : `${message} The UI is waiting on a successful live export before treating radio config data as authoritative.`;
-}
-
-async function _loadRadioConfig(force = false) {
-    try {
-        const response = await fetch(`/api/radio/config${force ? '?force=true' : ''}`);
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.detail || 'Unable to load radio config');
-        }
-
-        _clearRadioConfigPoll();
-        latestRadioConfigData = data;
-        const connection = data.connection || {};
-        const sync = data.config_sync || {};
-        const authoritative = !!sync.authoritative;
-        const pending = !!sync.pending;
-        _setText(
-            'radio-config-status',
-            pending ? 'Awaiting radio export' : authoritative ? 'Live export loaded' : (data.connected ? 'Radio connected' : 'Radio offline'),
-        );
-        _setText('radio-config-connection', _formatRadioConnection(connection));
-        _renderRadioConfigWarning(sync);
-        _renderStoredChannels(data.stored_channel_keys || {}, data.channels || []);
-        _renderRadioConfigEditor(data.form_values || {});
-        if (authoritative && data.exported_yaml) {
-            _setValue('radio-config-yaml', data.exported_yaml);
-        } else {
-            _refreshRadioYamlPreview();
-        }
-        if (pending) {
-            _scheduleRadioConfigPoll();
-        }
-        _refreshCommandBanner();
-        _renderSystemMessages();
-    } catch (error) {
-        _clearRadioConfigPoll();
-        latestRadioConfigData = null;
-        _renderRadioConfigEditor({});
-        _renderRadioConfigWarning({ status: 'error', message: error.message || 'Unable to load radio config' });
-        _setRadioOutput('');
-        _setText('radio-config-status', error.message || 'Unable to load radio config');
-        _refreshCommandBanner();
-        _renderSystemMessages();
-    }
-}
-
-function _formatRadioConnection(connection) {
-    const type = String(connection?.type || 'serial').toLowerCase();
-    if (['tcp', 'ip', 'wifi'].includes(type)) {
-        return connection?.host ? `IP ${connection.host}` : 'IP radio';
-    }
-    if (['ble', 'bluetooth'].includes(type)) {
-        return connection?.ble_address ? `Bluetooth ${connection.ble_address}` : 'Bluetooth radio';
-    }
-    return connection?.serial_port || connection?.port || '/dev/ttyACM0';
-}
-
-function _radioApplyPayload() {
-    return {
-        config_payload: _buildRadioConfigPayloadFromForm(),
-    };
-}
-
-async function _applyRadioConfig() {
-    const result = await _postJson('/api/radio/config/apply', _radioApplyPayload(), 'radio-config-status', 'Radio config saved');
-    if (result) {
-        _setRadioOutput(`Applied MeshTAK radio config:\n${JSON.stringify(result.config_payload || {}, null, 2)}\n\nCLI result:\n${JSON.stringify(result.command || result, null, 2)}`);
-        await _refreshRadioUi();
-        await _loadRadioConfig();
-    }
-}
-
-function _renderRadioConfigEditor(formValues) {
-    const host = document.getElementById('radio-config-fields');
-    if (!host) {
-        return;
-    }
-    host.innerHTML = RADIO_CONFIG_SCHEMA.map((section) => `
-        <article class="radio-config-section">
-            <h4>${_escapeHtml(section.title)}</h4>
-            <div class="radio-field-grid">
-                ${section.fields.map((field) => _renderRadioField(field, formValues[field.path])).join('')}
-            </div>
-        </article>
-    `).join('');
-    host.querySelectorAll('[data-radio-path]').forEach((el) => {
-        el.addEventListener('input', _refreshRadioYamlPreview);
-        el.addEventListener('change', _refreshRadioYamlPreview);
-    });
-}
-
-function _renderRadioField(field, value) {
-    const wideClass = field.wide ? ' radio-field--wide' : '';
-    const fieldId = `radio-field-${field.path.replace(/[^a-zA-Z0-9]+/g, '-')}`;
-    if (field.type === 'boolean') {
-        return `
-            <div class="radio-field${wideClass}">
-                <label for="${fieldId}">${_escapeHtml(field.label)}</label>
-                <select id="${fieldId}" data-radio-path="${_escapeHtml(field.path)}" data-radio-type="boolean">
-                    <option value="">Unset</option>
-                    <option value="true" ${value === true ? 'selected' : ''}>True</option>
-                    <option value="false" ${value === false ? 'selected' : ''}>False</option>
-                </select>
-            </div>
-        `;
-    }
-    if (field.type === 'textarea') {
-        return `
-            <div class="radio-field${wideClass}">
-                <label for="${fieldId}">${_escapeHtml(field.label)}</label>
-                <textarea id="${fieldId}" data-radio-path="${_escapeHtml(field.path)}" data-radio-type="text">${_escapeHtml(value ?? '')}</textarea>
-            </div>
-        `;
-    }
-    const inputType = field.type === 'number' ? 'number' : 'text';
-    return `
-        <div class="radio-field${wideClass}">
-            <label for="${fieldId}">${_escapeHtml(field.label)}</label>
-            <input id="${fieldId}" type="${inputType}" value="${_escapeHtml(value ?? '')}" data-radio-path="${_escapeHtml(field.path)}" data-radio-type="${_escapeHtml(field.type)}">
-        </div>
-    `;
-}
-
-function _buildRadioConfigPayloadFromForm() {
-    const payload = {};
-    document.querySelectorAll('[data-radio-path]').forEach((el) => {
-        const path = el.dataset.radioPath;
-        const type = el.dataset.radioType || 'text';
-        let value = el.value;
-        if (value === '') {
-            return;
-        }
-        if (type === 'number') {
-            value = Number(value);
-            if (Number.isNaN(value)) {
-                return;
-            }
-        } else if (type === 'boolean') {
-            value = value === 'true';
-        }
-        _setNestedValue(payload, path, value);
-    });
-    return payload;
-}
-
-function _setNestedValue(target, path, value) {
-    const parts = String(path || '').split('.').filter(Boolean);
-    if (!parts.length) {
-        return;
-    }
-    let current = target;
-    for (let i = 0; i < parts.length - 1; i += 1) {
-        const part = parts[i];
-        if (!current[part] || typeof current[part] !== 'object' || Array.isArray(current[part])) {
-            current[part] = {};
-        }
-        current = current[part];
-    }
-    current[parts[parts.length - 1]] = value;
-}
-
-function _refreshRadioYamlPreview() {
-    const preview = document.getElementById('radio-config-yaml');
-    if (!preview) {
-        return;
-    }
-    preview.value = _toSimpleYaml(_buildRadioConfigPayloadFromForm());
-}
-
-function _toSimpleYaml(value, depth = 0) {
-    if (value === null || value === undefined) {
-        return '';
-    }
-    if (Array.isArray(value)) {
-        return value.map((item) => {
-            if (item && typeof item === 'object') {
-                const nested = _toSimpleYaml(item, depth + 1);
-                return `${'  '.repeat(depth)}-\n${nested}`;
-            }
-            return `${'  '.repeat(depth)}- ${_toYamlScalar(item)}`;
-        }).join('\n');
-    }
-    if (typeof value === 'object') {
-        return Object.entries(value).map(([key, entry]) => {
-            if (entry && typeof entry === 'object') {
-                const nested = _toSimpleYaml(entry, depth + 1);
-                return `${'  '.repeat(depth)}${key}:\n${nested}`;
-            }
-            return `${'  '.repeat(depth)}${key}: ${_toYamlScalar(entry)}`;
-        }).join('\n');
-    }
-    return `${'  '.repeat(depth)}${_toYamlScalar(value)}`;
-}
-
-function _toYamlScalar(value) {
-    if (typeof value === 'number' || typeof value === 'boolean') {
-        return String(value);
-    }
-    const text = String(value ?? '');
-    if (!text) {
-        return '""';
-    }
-    if (/^[A-Za-z0-9_.:/-]+$/.test(text)) {
-        return text;
-    }
-    return JSON.stringify(text);
-}
-
-async function _runRadioCli(dryRun) {
-    const result = await _postJson('/api/radio/config/cli', {
-        args: document.getElementById('radio-cli-args')?.value.trim(),
-        dry_run: !!dryRun,
-    }, 'radio-config-status', dryRun ? 'CLI preview ready' : 'CLI command complete');
-    if (result) {
-        _setRadioOutput(JSON.stringify(result, null, 2));
-        if (!dryRun) {
-            await _refreshRadioUi();
-            await _loadRadioConfig();
-        }
-    }
-}
-
-function _generatePskBase64() {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    let binary = '';
-    bytes.forEach((byte) => {
-        binary += String.fromCharCode(byte);
-    });
-    return btoa(binary);
-}
-
-async function _createPrivateChannel() {
-    const payload = {
-        name: document.getElementById('private-channel-name')?.value.trim(),
-        index: document.getElementById('private-channel-index')?.value,
-        psk: document.getElementById('private-channel-psk')?.value.trim(),
-        apply_to_radio: !!document.getElementById('private-channel-apply-radio')?.checked,
-    };
-    if (!payload.psk) {
-        payload.psk = _generatePskBase64();
-        _setValue('private-channel-psk', payload.psk);
-    }
-    const result = await _postJson('/api/radio/channels/create-private', payload, 'radio-config-status', 'Private channel saved');
-    if (result) {
-        _showChannelExport(result);
-        await _refreshChannels();
-        await _loadRadioConfig();
-    }
-}
-
-async function _importPrivateChannel() {
-    const payload = {
-        import_text: document.getElementById('private-channel-import-text')?.value.trim(),
-        name: document.getElementById('private-channel-import-name')?.value.trim(),
-        index: document.getElementById('private-channel-import-index')?.value,
-        psk: document.getElementById('private-channel-import-psk')?.value.trim(),
-        apply_to_radio: !!document.getElementById('private-channel-import-apply-radio')?.checked,
-    };
-    const result = await _postJson('/api/radio/channels/import', payload, 'radio-config-status', 'Private channel imported');
-    if (result) {
-        _showChannelExport(result);
-        await _refreshChannels();
-        await _loadRadioConfig();
-    }
-}
-
-function _renderStoredChannels(storedKeys, bridgeChannels) {
-    const list = document.getElementById('radio-channel-list');
-    if (!list) {
-        return;
-    }
-    const bridgeByName = new Map((bridgeChannels || []).map((channel) => [String(channel.name || ''), channel]));
-    const rows = Object.values(storedKeys || {});
-    const bridgeOnlyRows = (bridgeChannels || [])
-        .filter((channel) => channel && channel.name && !storedKeys?.[channel.name])
-        .map((channel) => ({
-            name: channel.name,
-            psk: '',
-            masked: channel.pinned ? 'radio channel' : 'configured on radio',
-            index: channel.index,
-            bridge_only: true,
-        }));
-    const allRows = [...rows, ...bridgeOnlyRows];
-    if (!allRows.length) {
-        list.textContent = 'No private channels stored or discovered on the radio yet.';
-        return;
-    }
-    list.innerHTML = allRows.map((row) => {
-        const channel = bridgeByName.get(String(row.name || '')) || {};
-        const index = row.index ?? channel.index ?? 1;
-        const exportData = encodeURIComponent(JSON.stringify({ name: row.name, index, psk: row.psk }));
-        return `
-            <div class="radio-channel-item">
-                <div>
-                    <strong>${_escapeHtml(row.name || 'Unnamed')}</strong>
-                    <span>Index ${_escapeHtml(index)} | ${_escapeHtml(row.masked || 'stored')}</span>
-                </div>
-                <button class="action-btn" type="button" data-radio-export="${exportData}" ${row.bridge_only ? 'disabled title="Export requires a stored PSK"' : ''}>Export</button>
-            </div>
-        `;
-    }).join('');
-    list.querySelectorAll('[data-radio-export]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const data = JSON.parse(decodeURIComponent(button.dataset.radioExport || '{}'));
-            _showChannelExport({ export: _buildClientChannelExport(data.name, Number(data.index || 1), data.psk) });
-        });
-    });
-}
-
-function _channelOptionLabel(channel) {
-    const name = _channelName(channel);
-    const idx = Number.isFinite(Number(channel?.index)) ? Number(channel.index) : 0;
-    const suffix = idx === 0 ? 'ch0' : `ch${idx}`;
-    return channel?.pinned ? `${name} (${suffix}) *` : `${name} (${suffix})`;
-}
-
-function _showChannelExport(result) {
-    const exportData = result?.export || {};
-    const command = result?.command ? `\n\nRadio CLI output:\n${JSON.stringify(result.command, null, 2)}` : '';
-    _setRadioOutput(`MeshTAK import URL:\n${exportData.meshtak_url || ''}\n\nOther-device CLI:\n${exportData.meshtastic_cli || ''}\n\nJSON:\n${JSON.stringify(exportData.json || {}, null, 2)}${command}`);
-}
-
-function _buildClientChannelExport(name, index, psk) {
-    const payload = { name, index, psk, format: 'meshtak-channel-v1' };
-    const encoded = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-    return {
-        meshtak_url: `meshtak://channel/${encoded}`,
-        meshtastic_cli: `meshtastic --ch-index ${index} --ch-set name "${name}" --ch-set psk "${psk}"`,
-        json: payload,
-    };
-}
-
-function _setRadioOutput(value) {
-    const output = document.getElementById('radio-config-output');
-    if (output) {
-        output.value = value || '';
-    }
-}
-
-function _bindSettingsControls() {
-    const drawer = document.getElementById('settings-drawer');
-    const backdrop = document.getElementById('settings-backdrop');
-    const openBtn = document.getElementById('settings-toggle');
-    const closeBtn = document.getElementById('settings-close');
-
-    if (drawer && backdrop && openBtn && closeBtn) {
-        const openDrawer = () => {
-            drawer.classList.add('open');
-            backdrop.classList.add('open');
-            drawer.setAttribute('aria-hidden', 'false');
-        };
-        const closeDrawer = () => {
-            drawer.classList.remove('open');
-            backdrop.classList.remove('open');
-            drawer.setAttribute('aria-hidden', 'true');
-        };
-        openBtn.addEventListener('click', openDrawer);
-        closeBtn.addEventListener('click', closeDrawer);
-        backdrop.addEventListener('click', closeDrawer);
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape') {
-                closeDrawer();
-            }
-        });
-    }
-
-    const radioType = document.getElementById('radio-type');
-    if (radioType) {
-        radioType.addEventListener('change', async () => {
-            _syncRadioConnectionFields();
-            if (
-                latestAuth.authenticated
-                && latestAuth.role === 'admin'
-                && ['ble', 'bluetooth'].includes(String(radioType.value || '').toLowerCase())
-            ) {
-                await _loadBluetoothDevices(document.getElementById('radio-ble-address')?.value || '');
-            }
-        });
-    }
-    const bluetoothDevice = document.getElementById('radio-ble-device');
-    if (bluetoothDevice) {
-        bluetoothDevice.addEventListener('change', () => {
-            const selected = bluetoothDevice.selectedOptions?.[0];
-            const address = bluetoothDevice.value || selected?.dataset?.address || '';
-            if (address) {
-                _setValue('radio-ble-address', address);
-            }
-        });
-    }
-
-    _bindSettingsPost('tak-save', '/api/settings/tak', () => ({
-        enabled: document.getElementById('tak-enabled')?.checked,
-        host: document.getElementById('tak-host')?.value.trim(),
-        port: parseInt(document.getElementById('tak-port')?.value || '0', 10),
-        protocol: document.getElementById('tak-protocol')?.value,
-        tls: latestSettings.tak?.tls ?? false,
-    }), 'tak-settings-status', 'TAK settings saved');
-    _bindSettingsPost('tak-test', '/api/settings/tak/test', () => ({}), 'tak-settings-status', 'TAK test sent');
-    _bindCollectorPost('collector-start', '/api/control/collector/start', 'Collector started');
-    _bindSettingsPost('collector-stop', '/api/control/collector/stop', () => ({}), 'collector-settings-status', 'Collector stopped');
-    _bindCollectorPost('collector-reconnect', '/api/control/collector/reconnect', 'Collector reconnect requested');
-    _bindSettingsPost('radio-disconnect', '/api/control/radio/disconnect', () => ({}), 'radio-settings-status', 'Radio disconnected');
-    _bindSettingsPost('radio-reconnect', '/api/control/radio/reconnect', () => ({}), 'radio-settings-status', 'Radio reconnect requested');
-    _bindSettingsPost('radio-connect', '/api/control/radio/connect', () => ({
-        enabled: true,
-        type: document.getElementById('radio-type')?.value,
-        serial_port: document.getElementById('radio-serial')?.value.trim(),
-        host: document.getElementById('radio-host')?.value.trim(),
-        port: parseInt(document.getElementById('radio-port')?.value || '0', 10),
-        ble_address: document.getElementById('radio-ble-address')?.value.trim(),
-        ble_pin: document.getElementById('radio-ble-pin')?.value.trim(),
-    }), 'radio-settings-status', 'Radio connect requested');
-    _bindBluetoothControls();
-
-    const reload = document.getElementById('system-refresh-settings');
-    if (reload) {
-        reload.addEventListener('click', _loadSettings);
-    }
-    _loadSettings();
-}
-
-function _bindSettingsPost(buttonId, url, bodyBuilder, statusElId, okText) {
-    const button = document.getElementById(buttonId);
-    if (!button) {
-        return;
-    }
-    button.addEventListener('click', async () => {
-        await _postJson(url, bodyBuilder(), statusElId, okText);
-        if (url.includes('/radio/')) {
-            await _refreshRadioUi();
-        }
-    });
-}
-
-function _bindCollectorPost(buttonId, url, okText) {
-    const button = document.getElementById(buttonId);
-    if (!button) {
-        return;
-    }
-    button.addEventListener('click', async () => {
-        await _postJson('/api/settings/collector', {
-            spi_device: document.getElementById('collector-spi-device')?.value,
-        }, 'collector-settings-status', 'Collector device saved');
-        await _postJson(url, {}, 'collector-settings-status', okText);
-    });
-}
-
-async function _loadSettings() {
-    try {
-        const response = await fetch('/api/settings');
-        const data = await response.json();
-        latestSettings = data || {};
-        const tak = data.tak || {};
-        const collector = data.collector || {};
-        const radio = data.radio || {};
-
-        _setChecked('tak-enabled', !!tak.enabled);
-        _setValue('tak-host', tak.host || '');
-        _setValue('tak-port', tak.port || '');
-        _setValue('tak-protocol', tak.protocol || 'tcp');
-        _setValue('collector-spi-device', collector.spi_device || collector.device || '/dev/spidev0.0');
-        _setText('collector-settings-status', collector.status || 'Collector status unknown');
-        _setValue('radio-type', radio.type || 'serial');
-        _setValue('radio-serial', radio.serial_port || '');
-        _setValue('radio-host', radio.host || '');
-        _setValue('radio-port', radio.port || '');
-        _setValue('radio-ble-address', radio.ble_address || '');
-        _setValue('radio-ble-pin', '');
-        _setText('radio-settings-status', radio.status || 'Radio status unknown');
-        _setText('system-settings-status', 'Settings loaded');
-        _syncRadioConnectionFields();
-        if (latestAuth.authenticated && latestAuth.role === 'admin' && (radio.type || '').toLowerCase() === 'ble' && (radio.ble_address || latestBluetoothDevices.length === 0)) {
-            await _loadBluetoothDevices(radio.ble_address || '');
-        }
-    } catch (error) {
-        _setText('system-settings-status', 'Unable to load settings');
-    }
-}
-
-function _bindBluetoothControls() {
-    const scanButton = document.getElementById('bluetooth-scan');
-    if (scanButton) {
-        scanButton.addEventListener('click', async () => {
-            await _scanBluetoothDevices();
-        });
-    }
-    const pairButton = document.getElementById('bluetooth-pair');
-    if (pairButton) {
-        pairButton.addEventListener('click', async () => {
-            const address = (document.getElementById('radio-ble-address')?.value || '').trim();
-            const pin = (document.getElementById('radio-ble-pin')?.value || '').trim();
-            if (!address) {
-                _setText('bluetooth-settings-status', 'Choose or enter a Bluetooth device address first');
-                return;
-            }
-            const result = await _postJson('/api/bluetooth/pair', { address, pin }, 'bluetooth-settings-status', 'Bluetooth pairing complete');
-            if (result?.device?.address) {
-                _setValue('radio-ble-address', result.device.address);
-                await _loadBluetoothDevices(result.device.address);
-            }
-        });
-    }
-}
-
-async function _scanBluetoothDevices() {
-    const result = await _postJson('/api/bluetooth/scan', {}, 'bluetooth-settings-status', 'Bluetooth scan complete');
-    if (result?.devices) {
-        _populateBluetoothDeviceOptions(result.devices || [], document.getElementById('radio-ble-address')?.value || '');
-    }
-}
-
-async function _loadBluetoothDevices(selectedAddress = '') {
-    try {
-        const response = await fetch('/api/bluetooth/devices');
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.detail || 'Unable to load Bluetooth devices');
-        }
-        _populateBluetoothDeviceOptions(data.devices || [], selectedAddress);
-        _setText('bluetooth-settings-status', 'Bluetooth device list loaded');
-    } catch (error) {
-        _setText('bluetooth-settings-status', error.message || 'Unable to load Bluetooth devices');
-    }
-}
-
-function _populateBluetoothDeviceOptions(devices, selectedAddress = '') {
-    latestBluetoothDevices = Array.isArray(devices) ? devices.slice() : [];
-    const select = document.getElementById('radio-ble-device');
-    if (!select) {
-        return;
-    }
-    const normalized = String(selectedAddress || '').trim().toUpperCase();
-    select.innerHTML = '<option value="">Scan for Bluetooth devices</option>';
-    latestBluetoothDevices.forEach((device) => {
-        const option = document.createElement('option');
-        option.value = device.address || '';
-        option.dataset.address = device.address || '';
-        option.textContent = device.paired
-            ? `${device.name || device.address} (${device.address}) paired`
-            : `${device.name || device.address} (${device.address})`;
-        if (option.value === normalized) {
-            option.selected = true;
-        }
-        select.appendChild(option);
-    });
-    if (normalized) {
-        _setValue('radio-ble-address', normalized);
-    }
-}
-
-function _syncRadioConnectionFields() {
-    const type = String(document.getElementById('radio-type')?.value || 'serial').toLowerCase();
-    const isSerial = type === 'serial';
-    const isTcp = ['tcp', 'ip', 'wifi'].includes(type);
-    const isBle = ['ble', 'bluetooth'].includes(type);
-    const canManageBluetooth = latestAuth.authenticated && latestAuth.role === 'admin';
-
-    [
-        ['radio-serial-field', isSerial],
-        ['radio-host-field', isTcp],
-        ['radio-port-field', isTcp],
-        ['radio-ble-select-field', isBle],
-        ['radio-ble-address-field', isBle],
-        ['radio-ble-pin-field', isBle],
-        ['bluetooth-scan', isBle && canManageBluetooth],
-        ['bluetooth-pair', isBle && canManageBluetooth],
-        ['bluetooth-settings-status', isBle && canManageBluetooth],
-    ].forEach(([id, visible]) => {
-        const el = document.getElementById(id);
-        if (el) {
-            el.classList.toggle('hidden', !visible);
-        }
-    });
-}
-
-async function _postJson(url, body, statusElId, okText) {
-    const statusEl = document.getElementById(statusElId);
-    if (statusEl) {
-        statusEl.textContent = 'Working...';
-    }
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body || {}),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || data.error || 'Request failed');
-        }
-        if (statusEl) {
-            statusEl.textContent = okText || 'Saved';
-        }
-        return data;
-    } catch (error) {
-        if (statusEl) {
-            statusEl.textContent = error.message || 'Request failed';
-        }
-        return null;
-    }
-}
-
-function _setValue(id, value) {
-    const el = document.getElementById(id);
-    if (el) {
-        el.value = value;
-    }
-}
-
-function _setChecked(id, value) {
-    const el = document.getElementById(id);
-    if (el) {
-        el.checked = !!value;
-    }
 }
 
 function _setText(id, value) {

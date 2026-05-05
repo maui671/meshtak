@@ -1,23 +1,25 @@
-"""Query the running Mesh Point service and display health info."""
+"""Query the running Meshpoint service and display health info."""
 
 from __future__ import annotations
 
 import json
+import ssl
 import subprocess
 import urllib.request
 from datetime import timedelta
 from pathlib import Path
 
-DASHBOARD_URL = "http://localhost:8080"
+DASHBOARD_URL = "https://localhost:443"
 STATUS_ENDPOINT = f"{DASHBOARD_URL}/api/device/status"
 DEVICE_ENDPOINT = f"{DASHBOARD_URL}/api/device"
 LOCAL_CONFIG = Path("config/local.yaml")
+SSL_CONTEXT = ssl._create_unverified_context()
 
 
 def show_status() -> None:
-    """Print a consolidated status report for the Mesh Point."""
+    """Print a consolidated status report for the Meshpoint."""
     print()
-    print("  Mesh Point Status")
+    print("  Meshpoint Status")
     print("  " + "=" * 40)
 
     _show_service_state()
@@ -63,7 +65,7 @@ def _show_api_status() -> None:
     """Query the running service's status API."""
     try:
         req = urllib.request.Request(STATUS_ENDPOINT, method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=3, context=SSL_CONTEXT) as resp:
             data = json.loads(resp.read().decode())
     except Exception:
         print("  API:             unreachable")
@@ -93,7 +95,7 @@ def _show_device_info() -> None:
     """Fetch device identity details."""
     try:
         req = urllib.request.Request(DEVICE_ENDPOINT, method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=3, context=SSL_CONTEXT) as resp:
             device = json.loads(resp.read().decode())
     except Exception:
         return
