@@ -55,6 +55,8 @@ class RadioSettings {
                         <span class="r-console__cursor">_</span>
                         <span class="r-console__cmd">radio status</span>
                         <div class="r-console__right">
+                            <button class="r-btn r-btn--secondary"
+                                    id="r-shell-restart-btn">Restart Meshpoint</button>
                             <span class="r-heartbeat r-heartbeat--ok"></span>
                             <span class="r-console__meta" id="r-shell-meta">--</span>
                         </div>
@@ -89,6 +91,9 @@ class RadioSettings {
         `;
 
         document.getElementById('r-restart-btn').addEventListener(
+            'click', () => this._restartService(),
+        );
+        document.getElementById('r-shell-restart-btn').addEventListener(
             'click', () => this._restartService(),
         );
     }

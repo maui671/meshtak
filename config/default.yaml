@@ -116,5 +116,6 @@ tak:
   cot_type: "a-f-G-U-C"
   team: "Orange"
   role: "RTO"
+  color: "Orange"
   stale_seconds: 120
   use_meshtastic_names: true

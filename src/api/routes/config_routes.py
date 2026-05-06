@@ -153,6 +153,7 @@ async def get_config():
             "protocol": _config.tak.protocol,
             "team": _config.tak.team,
             "role": _config.tak.role,
+            "color": _config.tak.color,
         },
         "meshcore": mc_status,
         "duty_cycle": duty_info,
@@ -505,6 +506,7 @@ class TakUpdate(BaseModel):
     cot_type: Optional[str] = None
     team: Optional[str] = None
     role: Optional[str] = None
+    color: Optional[str] = None
     stale_seconds: Optional[int] = None
     use_meshtastic_names: Optional[bool] = None
 
@@ -562,6 +564,13 @@ async def update_tak(req: TakUpdate):
             raise HTTPException(400, "TAK role cannot be empty")
         tak.role = role
         updates["role"] = role
+
+    if req.color is not None:
+        color = req.color.strip()
+        if not color:
+            raise HTTPException(400, "TAK color cannot be empty")
+        tak.color = color
+        updates["color"] = color
 
     if req.stale_seconds is not None:
         if not 30 <= req.stale_seconds <= 3600:

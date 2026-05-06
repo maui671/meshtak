@@ -1,4 +1,14 @@
 class RadioTakCard {
+    static ROLE_OPTIONS = [
+        'Team Member', 'Team Leader', 'RTO', 'Medic',
+        'Observer', 'Scout', 'HQ', 'Vehicle',
+    ];
+
+    static COLOR_OPTIONS = [
+        'Blue', 'Green', 'Yellow', 'Orange',
+        'Red', 'Purple', 'Pink', 'Cyan', 'White',
+    ];
+
     constructor(api) {
         this._api = api;
         this._root = null;
@@ -59,7 +69,11 @@ class RadioTakCard {
                         </div>
                         <div class="r-field">
                             <label class="r-field__label" for="r-tak-role">Role</label>
-                            <input class="r-input" id="r-tak-role" placeholder="RTO" />
+                            <select class="r-select" id="r-tak-role"></select>
+                        </div>
+                        <div class="r-field">
+                            <label class="r-field__label" for="r-tak-color">Color</label>
+                            <select class="r-select" id="r-tak-color"></select>
                         </div>
                         <div class="r-field">
                             <label class="r-field__label" for="r-tak-stale">Stale Seconds</label>
@@ -77,9 +91,16 @@ class RadioTakCard {
                 </div>
             </div>
             <div class="r-card__actions">
+                <button class="r-btn r-btn--secondary" id="r-restart-tak">Restart Meshpoint</button>
                 <button class="r-btn r-btn--primary" id="r-save-tak">Save TAK Settings</button>
             </div>
         `;
+        this._root.querySelector('#r-tak-role').innerHTML = RadioTakCard.ROLE_OPTIONS
+            .map((role) => `<option value="${this._api.escape(role)}">${this._api.escape(role)}</option>`)
+            .join('');
+        this._root.querySelector('#r-tak-color').innerHTML = RadioTakCard.COLOR_OPTIONS
+            .map((color) => `<option value="${this._api.escape(color)}">${this._api.escape(color)}</option>`)
+            .join('');
         this._wire();
     }
 
@@ -92,6 +113,7 @@ class RadioTakCard {
         this._root.querySelector('#r-tak-cot-type').value = this._current.cot_type || 'a-f-G-U-C';
         this._root.querySelector('#r-tak-team').value = this._current.team || 'Orange';
         this._root.querySelector('#r-tak-role').value = this._current.role || 'RTO';
+        this._root.querySelector('#r-tak-color').value = this._current.color || 'Orange';
         this._root.querySelector('#r-tak-stale').value = this._current.stale_seconds || 120;
         this._root.querySelector('#r-tak-use-names').value = String(
             this._current.use_meshtastic_names !== false
@@ -105,6 +127,9 @@ class RadioTakCard {
         this._root.querySelector('#r-save-tak').addEventListener(
             'click', async () => this._save(),
         );
+        this._root.querySelector('#r-restart-tak').addEventListener(
+            'click', async () => this._api.restartService('Restarting... reloading in 10 seconds.'),
+        );
     }
 
     async _save() {
@@ -115,7 +140,8 @@ class RadioTakCard {
             protocol: this._root.querySelector('#r-tak-protocol').value,
             cot_type: this._root.querySelector('#r-tak-cot-type').value.trim(),
             team: this._root.querySelector('#r-tak-team').value.trim(),
-            role: this._root.querySelector('#r-tak-role').value.trim(),
+            role: this._root.querySelector('#r-tak-role').value,
+            color: this._root.querySelector('#r-tak-color').value,
             stale_seconds: parseInt(this._root.querySelector('#r-tak-stale').value || '120', 10),
             use_meshtastic_names: this._root.querySelector('#r-tak-use-names').value === 'true',
         };

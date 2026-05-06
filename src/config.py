@@ -155,6 +155,7 @@ class TakConfig:
     cot_type: str = "a-f-G-U-C"
     team: str = "Orange"
     role: str = "RTO"
+    color: str = "Orange"
     stale_seconds: int = 120
     use_meshtastic_names: bool = True
 
