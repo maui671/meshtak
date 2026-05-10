@@ -117,5 +117,6 @@ tak:
   team: "Orange"
   role: "RTO"
   color: "Orange"
+  publish_interval_seconds: 20
   stale_seconds: 120
   use_meshtastic_names: true

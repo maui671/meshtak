@@ -58,6 +58,11 @@ def build_nodeinfo_status(ni) -> dict:
     available = _nodeinfo_broadcaster is not None
     status = "inactive"
     reason = ""
+    interval_seconds = (
+        getattr(ni, "interval_seconds", None)
+        if getattr(ni, "interval_seconds", None) is not None
+        else (ni.interval_minutes * 60)
+    )
     if _nodeinfo_broadcaster is not None:
         running = _nodeinfo_broadcaster.is_running
         if _nodeinfo_broadcaster.last_sent_at is not None:
@@ -67,7 +72,7 @@ def build_nodeinfo_status(ni) -> dict:
     if _config is not None and not _config.transmit.enabled:
         status = "tx_disabled"
         reason = "Transmit is disabled. Enable TX and restart Meshpoint."
-    elif ni.interval_minutes == 0:
+    elif interval_seconds == 0:
         status = "paused"
         reason = (
             "Periodic NodeInfo is paused. Set a non-zero interval to resume."
@@ -87,6 +92,7 @@ def build_nodeinfo_status(ni) -> dict:
             "enabling TX, or verify the radio backend is available."
         )
     return {
+        "interval_seconds": interval_seconds,
         "interval_minutes": ni.interval_minutes,
         "startup_delay_seconds": ni.startup_delay_seconds,
         "available": available,
@@ -99,6 +105,7 @@ def build_nodeinfo_status(ni) -> dict:
 
 
 class NodeInfoUpdate(BaseModel):
+    interval_seconds: Optional[int] = None
     interval_minutes: Optional[int] = None
     startup_delay_seconds: Optional[int] = None
 
@@ -107,7 +114,7 @@ class NodeInfoUpdate(BaseModel):
 async def update_nodeinfo(req: NodeInfoUpdate):
     """Update NodeInfo broadcast settings.
 
-    ``interval_minutes`` hot-reloads the running broadcaster: the new
+    ``interval_seconds`` hot-reloads the running broadcaster: the new
     interval takes effect within milliseconds and the next broadcast
     fires at ``last_sent_at + new_interval`` (or right away if that's
     already past). Set to ``0`` to pause; restore to a non-zero value
@@ -129,15 +136,22 @@ async def update_nodeinfo(req: NodeInfoUpdate):
     interval_changed = False
     startup_delay_changed = False
 
-    if req.interval_minutes is not None:
-        if req.interval_minutes != 0 and not 5 <= req.interval_minutes <= 1440:
+    if req.interval_seconds is not None:
+        if req.interval_seconds != 0 and not 1 <= req.interval_seconds <= 86400:
             raise HTTPException(
                 400,
-                "interval_minutes must be 0 (disabled) or 5-1440 "
-                "(5 min to 24 hr)",
+                "interval_seconds must be 0 (disabled) or 1-86400",
             )
+        ni.interval_seconds = req.interval_seconds
+        updates["interval_seconds"] = req.interval_seconds
+        interval_changed = True
+    elif req.interval_minutes is not None:
+        if req.interval_minutes != 0 and not 5 <= req.interval_minutes <= 1440:
+            raise HTTPException(400, "interval_minutes must be 0 or 5-1440")
         ni.interval_minutes = req.interval_minutes
+        ni.interval_seconds = req.interval_minutes * 60
         updates["interval_minutes"] = req.interval_minutes
+        updates["interval_seconds"] = ni.interval_seconds
         interval_changed = True
     if req.startup_delay_seconds is not None:
         if not 0 <= req.startup_delay_seconds <= 3600:
@@ -151,6 +165,7 @@ async def update_nodeinfo(req: NodeInfoUpdate):
     if updates:
         full_nodeinfo = {
             "interval_minutes": ni.interval_minutes,
+            "interval_seconds": ni.interval_seconds,
             "startup_delay_seconds": ni.startup_delay_seconds,
         }
         try:
@@ -166,7 +181,10 @@ async def update_nodeinfo(req: NodeInfoUpdate):
         and _nodeinfo_broadcaster is not None
         and _nodeinfo_broadcaster.is_running
     ):
-        _nodeinfo_broadcaster.set_interval(req.interval_minutes)
+        interval_seconds = ni.interval_seconds
+        if interval_seconds is None:
+            interval_seconds = ni.interval_minutes * 60
+        _nodeinfo_broadcaster.set_interval_seconds(interval_seconds)
         interval_hot_reloaded = True
 
     restart_required = bool(updates) and (

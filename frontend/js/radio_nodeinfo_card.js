@@ -4,7 +4,7 @@
  * Shipped in v0.7.1. Three jobs:
  *   - Display a live countdown to the next NodeInfo broadcast.
  *   - Let the operator change the interval via preset chips
- *     (5m / 30m / 1h / 3h / 6h / 12h / 24h / Off) or a numeric input.
+ *     (10s / 20s / 30s / 1m / 5m / 30m / 3h / Off) or a numeric input.
  *   - Provide a "Send Now" button that pushes an immediate broadcast.
  *
  * Interval is the single knob: setting it to 0 pauses the broadcaster
@@ -15,14 +15,14 @@
  */
 class RadioNodeInfoCard {
     static PRESETS = [
-        { minutes: 0,    label: 'Off', off: true },
-        { minutes: 5,    label: '5m' },
-        { minutes: 30,   label: '30m' },
-        { minutes: 60,   label: '1h' },
-        { minutes: 180,  label: '3h' },
-        { minutes: 360,  label: '6h' },
-        { minutes: 720,  label: '12h' },
-        { minutes: 1440, label: '24h' },
+        { seconds: 0, label: 'Off', off: true },
+        { seconds: 10, label: '10s' },
+        { seconds: 20, label: '20s' },
+        { seconds: 30, label: '30s' },
+        { seconds: 60, label: '1m' },
+        { seconds: 300, label: '5m' },
+        { seconds: 1800, label: '30m' },
+        { seconds: 10800, label: '3h' },
     ];
 
     constructor(api) {
@@ -33,7 +33,7 @@ class RadioNodeInfoCard {
         // Saved state: what the live broadcaster is doing. Drives the
         // countdown, lamp, interval label, and Send Now next_due math.
         this._saved = {
-            interval_minutes: 0,
+            interval_seconds: 0,
             running: false,
             available: false,
             status: 'inactive',
@@ -45,7 +45,7 @@ class RadioNodeInfoCard {
         // not yet saved. Save reads draft; everything else reads saved.
         // Splitting these prevents a chip click from clobbering the
         // live state (which then snap-back-revert via api.refresh).
-        this._draft = { interval_minutes: 0 };
+        this._draft = { interval_seconds: 0 };
     }
 
     mount(rootEl) {
@@ -78,13 +78,13 @@ class RadioNodeInfoCard {
                     <div class="r-input-with-unit">
                         <input type="number" id="r-ni-input"
                                class="r-input r-input--mono r-input--narrow"
-                               min="0" max="1440" />
-                        <span class="r-input-with-unit__suffix">MIN</span>
+                               min="0" max="86400" />
+                        <span class="r-input-with-unit__suffix">SEC</span>
                     </div>
                 </div>
                 <p class="r-hint">
                     0 pauses periodic broadcasts (TX still works for DMs and
-                    replies). Otherwise 5-1440 minutes. Saved intervals take
+                    replies). Otherwise 1-86400 seconds. Saved intervals take
                     effect immediately: no service restart required.
                 </p>
             </div>
@@ -101,7 +101,7 @@ class RadioNodeInfoCard {
 
     render(config) {
         const ni = config.nodeinfo || {};
-        this._saved.interval_minutes = ni.interval_minutes || 0;
+        this._saved.interval_seconds = ni.interval_seconds || 0;
         this._saved.running = !!ni.running;
         this._saved.available = !!ni.available;
         this._saved.status = ni.status || 'inactive';
@@ -110,11 +110,11 @@ class RadioNodeInfoCard {
         this._saved.next_due_at = _parseTimestamp(ni.next_due_at);
         // Reset draft to the freshly-fetched saved value on every
         // render. After a successful save the UI snaps to live state.
-        this._draft.interval_minutes = this._saved.interval_minutes;
+        this._draft.interval_seconds = this._saved.interval_seconds;
         this._zeroSince = null;
 
-        this._root.querySelector('#r-ni-input').value = String(this._draft.interval_minutes);
-        this._setActiveChip(this._draft.interval_minutes);
+        this._root.querySelector('#r-ni-input').value = String(this._draft.interval_seconds);
+        this._setActiveChip(this._draft.interval_seconds);
         this._renderIntervalLabel();
         this._renderLamp();
         this._renderPendingCue();
@@ -131,14 +131,14 @@ class RadioNodeInfoCard {
         chips.innerHTML = RadioNodeInfoCard.PRESETS.map((p) => {
             const cls = p.off ? 'r-chip r-chip--off' : 'r-chip';
             return `<button type="button" class="${cls}" `
-                + `data-minutes="${p.minutes}">${p.label}</button>`;
+                + `data-seconds="${p.seconds}">${p.label}</button>`;
         }).join('');
     }
 
     _renderIntervalLabel() {
         const el = this._root.querySelector('#r-ni-interval-label');
-        const minutes = this._saved.interval_minutes;
-        el.textContent = minutes === 0 ? 'paused' : _formatDuration(minutes * 60);
+        const seconds = this._saved.interval_seconds;
+        el.textContent = seconds === 0 ? 'paused' : _formatDuration(seconds);
     }
 
     _renderLamp() {
@@ -149,7 +149,7 @@ class RadioNodeInfoCard {
             'status-lamp--warn',
             'status-lamp--off',
         );
-        if (this._saved.interval_minutes === 0) {
+        if (this._saved.interval_seconds === 0) {
             lamp.classList.add('status-lamp--off');
             label.textContent = 'PAUSED';
         } else if (this._saved.status === 'tx_disabled') {
@@ -167,15 +167,15 @@ class RadioNodeInfoCard {
         }
     }
 
-    _setActiveChip(minutes) {
+    _setActiveChip(seconds) {
         this._root.querySelectorAll('#r-ni-chips .r-chip').forEach((chip) => {
-            const m = parseInt(chip.dataset.minutes, 10);
-            chip.classList.toggle('r-chip--active', m === minutes);
+            const chipSeconds = parseInt(chip.dataset.seconds, 10);
+            chip.classList.toggle('r-chip--active', chipSeconds === seconds);
         });
     }
 
     _isPending() {
-        return this._draft.interval_minutes !== this._saved.interval_minutes;
+        return this._draft.interval_seconds !== this._saved.interval_seconds;
     }
 
     _renderPendingCue() {
@@ -195,21 +195,21 @@ class RadioNodeInfoCard {
         this._root.querySelectorAll('#r-ni-chips .r-chip').forEach((chip) => {
             chip.addEventListener('click', (e) => {
                 e.preventDefault();
-                const minutes = parseInt(chip.dataset.minutes, 10);
-                this._root.querySelector('#r-ni-input').value = String(minutes);
-                this._draft.interval_minutes = minutes;
-                this._setActiveChip(minutes);
+                const seconds = parseInt(chip.dataset.seconds, 10);
+                this._root.querySelector('#r-ni-input').value = String(seconds);
+                this._draft.interval_seconds = seconds;
+                this._setActiveChip(seconds);
                 this._renderPendingCue();
             });
         });
 
         const input = this._root.querySelector('#r-ni-input');
         input.addEventListener('input', () => {
-            const minutes = parseInt(input.value, 10);
-            if (isNaN(minutes)) return;
-            this._setActiveChip(minutes);
-            if (minutes === 0 || (minutes >= 5 && minutes <= 1440)) {
-                this._draft.interval_minutes = minutes;
+            const seconds = parseInt(input.value, 10);
+            if (isNaN(seconds)) return;
+            this._setActiveChip(seconds);
+            if (seconds === 0 || (seconds >= 1 && seconds <= 86400)) {
+                this._draft.interval_seconds = seconds;
             }
             this._renderPendingCue();
         });
@@ -224,17 +224,17 @@ class RadioNodeInfoCard {
     }
 
     async _save() {
-        const minutes = this._draft.interval_minutes;
-        if (isNaN(minutes) || (minutes !== 0 && (minutes < 5 || minutes > 1440))) {
-            this._api.toast('Interval must be 0 or 5-1440 minutes');
+        const seconds = this._draft.interval_seconds;
+        if (isNaN(seconds) || (seconds !== 0 && (seconds < 1 || seconds > 86400))) {
+            this._api.toast('Interval must be 0 or 1-86400 seconds');
             return;
         }
         const result = await this._api.put(
-            '/api/config/nodeinfo', { interval_minutes: minutes },
+            '/api/config/nodeinfo', { interval_seconds: seconds },
         );
         if (!result) return;
         this._api.toast(
-            minutes === 0 ? 'NodeInfo broadcasts paused' : 'Interval saved',
+            seconds === 0 ? 'NodeInfo broadcasts paused' : 'Interval saved',
         );
         if (result.restart_required) {
             this._api.signalRestart(
@@ -259,9 +259,9 @@ class RadioNodeInfoCard {
         if (result.success) {
             this._api.toast('NodeInfo broadcast sent');
             this._saved.last_sent_at = new Date();
-            if (this._saved.interval_minutes > 0) {
+            if (this._saved.interval_seconds > 0) {
                 this._saved.next_due_at = new Date(
-                    Date.now() + this._saved.interval_minutes * 60 * 1000,
+                    Date.now() + this._saved.interval_seconds * 1000,
                 );
             }
             this._tick();
@@ -286,7 +286,7 @@ class RadioNodeInfoCard {
         const valueEl = this._root.querySelector('#r-ni-countdown');
         const lastEl = this._root.querySelector('#r-ni-last span');
 
-        if (this._saved.interval_minutes === 0) {
+        if (this._saved.interval_seconds === 0) {
             valueEl.textContent = 'PAUSED';
             valueEl.style.opacity = '0.45';
             lastEl.textContent = this._saved.last_sent_at
@@ -365,6 +365,7 @@ function _formatAgo(seconds) {
 }
 
 function _formatDuration(seconds) {
+    if (seconds < 60) return `${seconds} sec`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
     const h = seconds / 3600;
     return Number.isInteger(h) ? `${h} hr` : `${h.toFixed(1)} hr`;

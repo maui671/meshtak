@@ -156,6 +156,7 @@ class TakConfig:
     team: str = "Orange"
     role: str = "RTO"
     color: str = "Orange"
+    publish_interval_seconds: int = 20
     stale_seconds: int = 120
     use_meshtastic_names: bool = True
 
@@ -168,12 +169,14 @@ class NodeInfoConfig:
     primary channel so receiving Meshtastic clients build a stable
     contact entry.
 
-    Set ``interval_minutes`` to ``0`` to disable periodic broadcasts
-    while keeping TX enabled (DMs and replies still work). Otherwise
-    valid range is 5..1440 (5 min to 24 hr).
+    ``interval_seconds`` is the preferred setting and supports custom
+    second-level intervals, including ``0`` to disable periodic
+    broadcasts while keeping TX enabled. ``interval_minutes`` remains
+    for backward compatibility with older configs.
     """
 
     interval_minutes: int = 180
+    interval_seconds: Optional[int] = None
     startup_delay_seconds: int = 60
 
 

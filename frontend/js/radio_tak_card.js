@@ -76,6 +76,11 @@ class RadioTakCard {
                             <select class="r-select" id="r-tak-color"></select>
                         </div>
                         <div class="r-field">
+                            <label class="r-field__label" for="r-tak-publish-interval">Publish Interval</label>
+                            <input type="number" class="r-input r-input--mono r-input--narrow"
+                                   id="r-tak-publish-interval" min="1" max="86400" />
+                        </div>
+                        <div class="r-field">
                             <label class="r-field__label" for="r-tak-stale">Stale Seconds</label>
                             <input type="number" class="r-input r-input--mono r-input--narrow"
                                    id="r-tak-stale" min="30" max="3600" />
@@ -114,6 +119,7 @@ class RadioTakCard {
         this._root.querySelector('#r-tak-team').value = this._current.team || 'Orange';
         this._root.querySelector('#r-tak-role').value = this._current.role || 'RTO';
         this._root.querySelector('#r-tak-color').value = this._current.color || 'Orange';
+        this._root.querySelector('#r-tak-publish-interval').value = this._current.publish_interval_seconds || 20;
         this._root.querySelector('#r-tak-stale').value = this._current.stale_seconds || 120;
         this._root.querySelector('#r-tak-use-names').value = String(
             this._current.use_meshtastic_names !== false
@@ -142,6 +148,7 @@ class RadioTakCard {
             team: this._root.querySelector('#r-tak-team').value.trim(),
             role: this._root.querySelector('#r-tak-role').value,
             color: this._root.querySelector('#r-tak-color').value,
+            publish_interval_seconds: parseInt(this._root.querySelector('#r-tak-publish-interval').value || '20', 10),
             stale_seconds: parseInt(this._root.querySelector('#r-tak-stale').value || '120', 10),
             use_meshtastic_names: this._root.querySelector('#r-tak-use-names').value === 'true',
         };

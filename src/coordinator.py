@@ -62,6 +62,7 @@ class PipelineCoordinator:
         self._running = False
         self._pipeline_task: Optional[asyncio.Task] = None
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._self_publish_task: Optional[asyncio.Task] = None
 
     @property
     def database(self) -> DatabaseManager:
@@ -139,6 +140,9 @@ class PipelineCoordinator:
         self._cleanup_task = asyncio.create_task(
             self._cleanup_loop(), name="db-cleanup"
         )
+        self._self_publish_task = asyncio.create_task(
+            self._self_publish_loop(), name="self-publish"
+        )
         registered = [src.name for src in self._capture._sources]
         sources = ", ".join(
             _SOURCE_LABELS.get(s, s) for s in registered
@@ -151,7 +155,7 @@ class PipelineCoordinator:
     async def stop(self) -> None:
         self._running = False
         await self._capture.stop()
-        for task in (self._pipeline_task, self._cleanup_task):
+        for task in (self._pipeline_task, self._cleanup_task, self._self_publish_task):
             if task:
                 task.cancel()
                 try:
@@ -210,7 +214,6 @@ class PipelineCoordinator:
         packet.capture_source = raw.capture_source
         await self._store_packet(packet)
         await self._publish_tak(packet)
-        await self._publish_tak_self()
         await self._relay.process_packet(packet)
         self._publish_mqtt(packet)
         self._record_stats(packet)
@@ -370,14 +373,29 @@ class PipelineCoordinator:
         except Exception:
             logger.exception("MQTT publish error for packet %s", packet.packet_id)
 
-    async def _publish_tak_self(self) -> None:
-        if not self._tak:
-            return
+    async def _self_publish_loop(self) -> None:
         try:
-            await self._tak.publish_self_heartbeat()
-        except Exception as exc:
-            self._tak.mark_error(exc)
-            logger.exception("TAK self publish error")
+            while self._running:
+                await self._publish_self_snapshot_once()
+                interval = max(1, int(self._config.tak.publish_interval_seconds or 20))
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Self publish loop error")
+
+    async def _publish_self_snapshot_once(self) -> None:
+        if self._tak:
+            try:
+                await self._tak.publish_self_heartbeat()
+            except Exception as exc:
+                self._tak.mark_error(exc)
+                logger.exception("TAK self publish error")
+        if self._mqtt:
+            try:
+                self._mqtt.publish_self_snapshot()
+            except Exception:
+                logger.exception("MQTT self publish error")
 
     def _setup_channel_keys(self) -> None:
         for name, key in self._config.meshtastic.channel_keys.items():

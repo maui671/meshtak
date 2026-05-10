@@ -28,6 +28,8 @@ DEFAULT_INTERVAL_SECONDS = 180 * 60
 INTERVAL_DISABLED = 0
 INTERVAL_MIN_MINUTES = 5
 INTERVAL_MAX_MINUTES = 1440
+INTERVAL_MIN_SECONDS = 1
+INTERVAL_MAX_SECONDS = 86400
 
 
 def clamp_interval_minutes(value: int) -> int:
@@ -65,6 +67,45 @@ def clamp_interval_minutes(value: int) -> int:
         )
         return INTERVAL_MAX_MINUTES
     return value
+
+
+def clamp_interval_seconds(value: int) -> int:
+    """Clamp custom second-based NodeInfo interval to 0..86400."""
+    if value == INTERVAL_DISABLED:
+        return INTERVAL_DISABLED
+    if value < 0:
+        logger.warning(
+            "transmit.nodeinfo.interval_seconds=%d is negative, "
+            "treating as disabled (0).",
+            value,
+        )
+        return INTERVAL_DISABLED
+    if value < INTERVAL_MIN_SECONDS:
+        logger.warning(
+            "transmit.nodeinfo.interval_seconds=%d is below minimum %d, clamping.",
+            value, INTERVAL_MIN_SECONDS,
+        )
+        return INTERVAL_MIN_SECONDS
+    if value > INTERVAL_MAX_SECONDS:
+        logger.warning(
+            "transmit.nodeinfo.interval_seconds=%d is above maximum %d, clamping.",
+            value, INTERVAL_MAX_SECONDS,
+        )
+        return INTERVAL_MAX_SECONDS
+    return value
+
+
+def resolve_interval_seconds(nodeinfo_cfg) -> int:
+    """Resolve live interval seconds with backward compatibility.
+
+    Prefer ``interval_seconds`` when present. Fall back to the older
+    ``interval_minutes`` config for existing installs.
+    """
+    interval_seconds = getattr(nodeinfo_cfg, "interval_seconds", None)
+    if interval_seconds is not None:
+        return clamp_interval_seconds(int(interval_seconds))
+    interval_minutes = clamp_interval_minutes(int(getattr(nodeinfo_cfg, "interval_minutes", 180)))
+    return interval_minutes * 60
 
 
 class NodeInfoBroadcaster:
@@ -163,8 +204,8 @@ class NodeInfoBroadcaster:
         finally:
             self._task = None
 
-    def set_interval(self, minutes: int) -> int:
-        """Hot-reload the broadcast interval. Returns the clamped value.
+    def set_interval_seconds(self, seconds: int) -> int:
+        """Hot-reload the broadcast interval in seconds. Returns the clamped value.
 
         Mutates the running broadcast loop in place: the new interval
         takes effect within milliseconds of this call. Setting to ``0``
@@ -182,9 +223,9 @@ class NodeInfoBroadcaster:
         Safe to call from any context (sync or async). The loop wakes
         via an :class:`asyncio.Event` so there's no busy polling.
         """
-        clamped = clamp_interval_minutes(minutes)
+        clamped = clamp_interval_seconds(seconds)
         previous = self._interval
-        self._interval = clamped * 60
+        self._interval = clamped
         if previous != self._interval:
             logger.info(
                 "NodeInfo interval hot-reloaded: %ds -> %ds",

@@ -16,7 +16,9 @@ class RadioMqttCard {
             <p class="r-card__hint">
                 For Meshradar-style local ingest, <code>API Key</code> mode can work by itself if the key was created in
                 Meshradar after broker-sync was enabled. Only enter broker <code>Username / Password</code> here when you
-                intentionally want Meshpoint to use a regular MQTT account instead of API-key-only auth.
+                intentionally want Meshpoint to use a regular MQTT account instead of API-key-only auth. Topic format is
+                <code>&lt;topic_root&gt;/&lt;region&gt;/...</code>, so for <code>/msh/US/GSMC</code> use
+                <code>topic_root=msh</code> and <code>region=US/GSMC</code>.
             </p>
             <div class="config-stack">
                 <div class="config-pane">
@@ -109,7 +111,7 @@ class RadioMqttCard {
 
     _toggleAuthFields() {
         const mode = this._root.querySelector('#r-mqtt-auth-mode').value;
-        const showUserPass = mode !== 'none';
+        const showUserPass = mode === 'username_password';
         const showApiKey = mode === 'api_key';
         this._root.querySelector('#r-mqtt-user-wrap').style.display = showUserPass ? '' : 'none';
         this._root.querySelector('#r-mqtt-pass-wrap').style.display = showUserPass ? '' : 'none';
@@ -117,18 +119,21 @@ class RadioMqttCard {
     }
 
     async _save() {
+        const authMode = this._root.querySelector('#r-mqtt-auth-mode').value;
         const payload = {
             enabled: this._root.querySelector('#r-mqtt-enabled').value === 'true',
             broker: this._root.querySelector('#r-mqtt-broker').value.trim(),
             port: parseInt(this._root.querySelector('#r-mqtt-port').value || '1883', 10),
-            auth_mode: this._root.querySelector('#r-mqtt-auth-mode').value,
-            username: this._root.querySelector('#r-mqtt-auth-mode').value !== 'none'
+            auth_mode: authMode,
+            username: authMode === 'username_password'
                 ? this._root.querySelector('#r-mqtt-username').value
                 : '',
-            password: this._root.querySelector('#r-mqtt-auth-mode').value !== 'none'
+            password: authMode === 'username_password'
                 ? this._root.querySelector('#r-mqtt-password').value
                 : '',
-            api_key: this._root.querySelector('#r-mqtt-api-key').value,
+            api_key: authMode === 'api_key'
+                ? this._root.querySelector('#r-mqtt-api-key').value
+                : '',
             api_key_field: 'password',
             topic_root: this._root.querySelector('#r-mqtt-topic-root').value.trim(),
             region: this._root.querySelector('#r-mqtt-region').value.trim(),

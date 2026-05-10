@@ -22,7 +22,7 @@ from src.models.packet import Packet
 from src.storage.message_repository import MessageRepository
 from src.transmit.nodeinfo_broadcaster import (
     NodeInfoBroadcaster,
-    clamp_interval_minutes,
+    resolve_interval_seconds,
 )
 from src.transmit.tx_service import TxService
 from src.version import __version__
@@ -276,12 +276,12 @@ def _build_nodeinfo_broadcaster(
         return None
 
     ni = config.transmit.nodeinfo
-    interval_minutes = clamp_interval_minutes(ni.interval_minutes)
+    interval_seconds = resolve_interval_seconds(ni)
     startup_delay = max(0, ni.startup_delay_seconds)
-    if interval_minutes == 0:
+    if interval_seconds == 0:
         logger.info(
             "NodeInfo broadcaster starting paused "
-            "(transmit.nodeinfo.interval_minutes=0); save a non-zero "
+            "(transmit.nodeinfo interval=0); save a non-zero "
             "interval on the radio tab to resume."
         )
     return NodeInfoBroadcaster(
@@ -289,7 +289,7 @@ def _build_nodeinfo_broadcaster(
         long_name=config.transmit.long_name,
         short_name=config.transmit.short_name,
         startup_delay_seconds=startup_delay,
-        interval_seconds=interval_minutes * 60,
+        interval_seconds=interval_seconds,
     )
 
 

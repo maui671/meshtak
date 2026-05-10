@@ -178,18 +178,19 @@ class MqttPublisher:
     def _mqtt_credentials(self) -> tuple[str, str | None] | None:
         mode = (self._config.auth_mode or "username_password").strip().lower()
         username = (self._config.username or "").strip()
+        password = self._config.password
         api_key = (self._config.api_key or "").strip()
 
         if mode in {"none", "anonymous"}:
             return None
 
-        if username:
-            return username, self._config.password
-
         if mode == "api_key":
             if api_key:
                 return "mrk_" + hashlib.sha256(api_key.encode()).hexdigest()[:20], api_key
             return None
+
+        if username:
+            return username, password
 
         logger.warning("MQTT auth_mode=%s but username is empty; continuing without auth", mode)
         return None

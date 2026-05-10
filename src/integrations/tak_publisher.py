@@ -109,7 +109,8 @@ class TakPublisher:
             return
 
         now = asyncio.get_running_loop().time()
-        if now - self._last_self_sent < 30.0:
+        interval = max(1.0, float(getattr(self._config, "publish_interval_seconds", 20) or 20))
+        if now - self._last_self_sent < interval:
             return
 
         local_node = Node(
@@ -163,6 +164,18 @@ class TakPublisher:
         cot_type = html.escape(config.cot_type, quote=True)
         team = html.escape(config.team, quote=True)
         role = html.escape(config.role, quote=True)
+        color_name = str(getattr(config, "color", "Orange") or "Orange").strip().lower()
+        color_argb = {
+            "blue": "-16776961",
+            "green": "-16711936",
+            "yellow": "-256",
+            "orange": "-23296",
+            "red": "-65536",
+            "purple": "-8388480",
+            "pink": "-16181",
+            "cyan": "-16711681",
+            "white": "-1",
+        }.get(color_name, "-23296")
         lat = node.latitude or 0.0
         lon = node.longitude or 0.0
         alt = node.altitude or 0.0
@@ -173,7 +186,8 @@ class TakPublisher:
             f'<point lat="{lat:.8f}" lon="{lon:.8f}" hae="{alt:.2f}" '
             f'ce="9999999.0" le="9999999.0"/>'
             f'<detail><contact callsign="{callsign}"/>'
-            f'<__group name="{team}" role="{role}"/></detail></event>'
+            f'<__group name="{team}" role="{role}"/>'
+            f'<color argb="{color_argb}"/></detail></event>'
         )
 
     @staticmethod

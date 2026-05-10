@@ -208,7 +208,11 @@ class RadioSettings {
             if (!ok) return;
         }
         try {
-            await fetch('/api/config/restart', { method: 'POST' });
+            const res = await fetch('/api/config/restart', { method: 'POST' });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
             const msg = document.getElementById('r-restart-msg');
             if (msg) msg.textContent = restartMsg || 'Restarting... reloading in 10 seconds.';
             setTimeout(() => location.reload(), 10000);

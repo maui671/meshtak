@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -151,9 +152,13 @@ async def get_config():
             "host": _config.tak.host,
             "port": _config.tak.port,
             "protocol": _config.tak.protocol,
+            "cot_type": _config.tak.cot_type,
             "team": _config.tak.team,
             "role": _config.tak.role,
             "color": _config.tak.color,
+            "publish_interval_seconds": _config.tak.publish_interval_seconds,
+            "stale_seconds": _config.tak.stale_seconds,
+            "use_meshtastic_names": _config.tak.use_meshtastic_names,
         },
         "meshcore": mc_status,
         "duty_cycle": duty_info,
@@ -446,14 +451,14 @@ async def update_mqtt(req: MqttUpdate):
         updates["api_key"] = req.api_key
 
     if req.topic_root is not None:
-        topic_root = req.topic_root.strip()
+        topic_root = req.topic_root.strip().strip("/")
         if not topic_root:
             raise HTTPException(400, "MQTT topic root cannot be empty")
         mqtt.topic_root = topic_root
         updates["topic_root"] = topic_root
 
     if req.region is not None:
-        region = req.region.strip()
+        region = req.region.strip().strip("/")
         if not region:
             raise HTTPException(400, "MQTT region cannot be empty")
         mqtt.region = region
@@ -507,6 +512,7 @@ class TakUpdate(BaseModel):
     team: Optional[str] = None
     role: Optional[str] = None
     color: Optional[str] = None
+    publish_interval_seconds: Optional[int] = None
     stale_seconds: Optional[int] = None
     use_meshtastic_names: Optional[bool] = None
 
@@ -572,6 +578,12 @@ async def update_tak(req: TakUpdate):
         tak.color = color
         updates["color"] = color
 
+    if req.publish_interval_seconds is not None:
+        if req.publish_interval_seconds < 1 or req.publish_interval_seconds > 86400:
+            raise HTTPException(400, "TAK/MQTT publish interval must be 1-86400 seconds")
+        tak.publish_interval_seconds = req.publish_interval_seconds
+        updates["publish_interval_seconds"] = req.publish_interval_seconds
+
     if req.stale_seconds is not None:
         if not 30 <= req.stale_seconds <= 3600:
             raise HTTPException(400, "TAK stale seconds must be 30-3600")
@@ -598,14 +610,21 @@ async def update_tak(req: TakUpdate):
 
 @router.post("/restart")
 async def restart_service():
-    """Trigger a service restart via systemctl."""
+    """Trigger a service restart via systemctl.
+
+    The restart is detached from the request handler so the dashboard
+    can receive a clean HTTP response before the service exits.
+    """
     try:
         subprocess.Popen(  # nosec B603 B607
-            ["sudo", "systemctl", "restart", "meshpoint"],
+            ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "restart", "meshpoint"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return {"status": "restarting"}
+        return {
+            "status": "restarting",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
     except Exception as exc:
         raise HTTPException(500, f"Restart failed: {exc}")
 
